@@ -1,0 +1,34 @@
+# Redmine issue.assigned_to.id -> GLPI users_id
+# Spec section 8.
+#
+# Policy (closed decision): a user with no GLPI counterpart - including
+# powerbi/162 - and an issue with no assigned_to at all leave the field empty
+# and add a warning to the report. Never abort the migration for this reason.
+#
+# To mark a Redmine user as deliberately unmapped, set glpi_id: null.
+
+users:
+  33:  {glpi_id: 13,   login: "alexandre.parra"}
+  178: {glpi_id: 269,  login: "ana.marreira"}
+  95:  {glpi_id: 102,  login: "ana.nsilveira"}
+  185: {glpi_id: 289,  login: "andre.mapurunga"}
+  190: {glpi_id: 771,  login: "caroline.menezes"}
+  173: {glpi_id: 127,  login: "cristiane.cortes"}
+  156: {glpi_id: 12,   login: "daniel.honorato"}
+  128: {glpi_id: 60,   login: "david.sales"}
+  195: {glpi_id: 68,   login: "desirene.costa"}
+  84:  {glpi_id: 66,   login: "genna.lima"}
+  174: {glpi_id: 172,  login: "giullian.barbosa"}
+  94:  {glpi_id: 70,   login: "guilherme.coelho"}
+  183: {glpi_id: 110,  login: "gustavo.aires"}
+  15:  {glpi_id: 101,  login: "igor.lonnes"}
+  187: {glpi_id: 180,  login: "jeane.silva"}
+  189: {glpi_id: 293,  login: "katielle.oliveira"}
+  199: {glpi_id: 768,  login: "paulo.rocha"}
+  162: {glpi_id: null, login: "powerbi"}          # no GLPI counterpart - empty + warning
+  197: {glpi_id: 769,  login: "rayssa.mota"}
+  62:  {glpi_id: 9,    login: "rogerio.ramos"}
+  36:  {glpi_id: 31,   login: "sophia.ribeiro"}
+  80:  {glpi_id: 770,  login: "teodoro.lima"}
+  101: {glpi_id: 161,  login: "thyago.lima"}
+  166: {glpi_id: 98,   login: "vanessa.diniz"}

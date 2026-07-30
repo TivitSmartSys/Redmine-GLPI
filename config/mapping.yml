@@ -1,0 +1,321 @@
+# Field mapping Redmine -> GLPI.
+#
+# GOVERNING RULE (spec section 4): custom fields are matched by NAME, never by
+# ID. Custom-field IDs differ between Redmine trackers - the source document
+# claimed "Situação Faturamento" was index 9, while ID 9 is actually
+# "Ano de Início". Matching by ID would write a year into a billing-status field.
+#
+# Source kinds:
+#   attribute    - dotted path into the issue JSON, e.g. status.id
+#   custom_field - matched against custom_fields[].name (case/space-insensitive)
+#   issue_id     - the Redmine issue id itself
+# Several sources may be listed; the first one that yields a non-empty value wins.
+#
+# Transform kinds:
+#   text     - verbatim + .strip(). NEVER parsed as a number.
+#   date     - verbatim yyyy-mm-dd; the key is omitted entirely when empty.
+#   integer  - numeric passthrough (done_ratio)
+#   yesno    - "Não"/"Sim" -> 0/1; unrecognised value -> skip field + warning
+#   status   - via status_map.yml
+#   user     - via user_map.yml
+#   dropdown - name -> id lookup in the GLPI dictionary named by `itemtype`
+#
+# ---------------------------------------------------------------------------
+# GLPI dictionary contents - verified live 2026-07-29
+# ---------------------------------------------------------------------------
+# Only 3 of the 12 dictionaries are populated. The other 9 are EMPTY, so every
+# value of those fields is skipped with a warning until someone fills them in
+# on the GLPI side. We never create dictionary entries automatically (spec 6.3).
+#
+#   Gestofielddropdown        (2) TIVIT, ITALTEL
+#   Despesafielddropdown      (4) CAPEX GDS, CAPEX NEGÓCIO, OPEX GDS, OPEX NEGÓCIO
+#   Complexidadefielddropdown (3) BAIXA, ALTA, MÉDIA
+#   all others                (0) EMPTY
+#
+# Two open questions from the spec are settled by this check:
+#   - Appendix D asked whether "CAPEX GDS" exists in Despesa. It does.
+#   - Section 6.3 asked about itemtype capitalisation. Both '...fielddropdown'
+#     and '...fieldDropdown' resolve; GLPI matches itemtypes case-insensitively.
+#
+# Note that Complexidade is stored UPPERCASE in GLPI (BAIXA) while Redmine sends
+# title case (Baixa) - the mandated case-insensitive comparison is what makes
+# these match, so it must not be "optimised" into an exact comparison.
+
+# ---------------------------------------------------------------------------
+# Core project columns (glpi_projects) - spec section 5
+# ---------------------------------------------------------------------------
+project_core:
+  - column: name
+    transform: text
+    sources: [{from: attribute, name: subject}]
+
+  - column: content
+    transform: text
+    # Redmine Textile markup is copied verbatim; conversion is out of scope in v1.
+    sources: [{from: attribute, name: description}]
+
+  - column: projectstates_id
+    transform: status
+    sources: [{from: attribute, name: status.id}]
+
+  - column: users_id
+    transform: user
+    sources: [{from: attribute, name: assigned_to.id}]
+
+  - column: plan_start_date
+    transform: date
+    sources: [{from: attribute, name: start_date}]
+
+  # Spec 11.2 - default order is the custom field first, due_date as fallback.
+  # Swap the two entries here to invert the precedence; no code change needed.
+  - column: plan_end_date
+    transform: date
+    sources:
+      - {from: custom_field, name: "DATA TERMINO PLANEJADA"}
+      - {from: attribute, name: due_date}
+
+  # Spec 11.5 - deliberately NO closed_on fallback. Source data is inconsistent
+  # (issue 17582 has closed_on while status is Encerramento and done_ratio 90),
+  # so closed_on is reported only, never written.
+  - column: real_end_date
+    transform: date
+    sources: [{from: custom_field, name: "Data Finalização"}]
+
+  - column: percent_done
+    transform: integer
+    sources: [{from: attribute, name: done_ratio}]
+
+  - column: comment
+    transform: text
+    sources: [{from: custom_field, name: "NOTAS"}]
+
+# entities_id: TODO (spec 11.3, unresolved). The key is deliberately NOT sent -
+# GLPI creates the project in the API session's active entity. Do not guess.
+
+# ---------------------------------------------------------------------------
+# Plugin container 15 "camposadicionaisprojetos" - spec sections 6.2 and 6.3
+# ---------------------------------------------------------------------------
+container15:
+  # Deduplication marker. Written ALWAYS, even when every other field is empty
+  # (spec 9.1). Note: the marker is `rdmfield`, NOT the inactive `idrdmfield`.
+  - column: rdmfield
+    transform: text
+    sources: [{from: issue_id}]
+
+  - column: dataderecebimentodatapfield
+    transform: date
+    sources: [{from: custom_field, name: "Data de recebimento da TAP"}]
+
+  - column: nmerodopedidoclientefield
+    transform: text
+    sources: [{from: custom_field, name: "Número do pedido cliente"}]
+
+  - column: datadesolicitaobaremofield
+    transform: date
+    sources: [{from: custom_field, name: "Data de solicitação Baremos"}]
+
+  - column: datadeentregadapropostafield
+    transform: date
+    sources: [{from: custom_field, name: "Data de entrega da proposta"}]
+
+  - column: datadeaprovaodapropostafield
+    transform: date
+    sources: [{from: custom_field, name: "Data de aprovação da proposta"}]
+
+  - column: andamentodoprojetofield
+    transform: text
+    sources: [{from: custom_field, name: "Andamento do Projeto"}]
+
+  # Brazilian number convention ("66.977,45"). GLPI column is text -> copy
+  # verbatim, strip() only. Never float().
+  - column: valordoprojetofield
+    transform: text
+    mandatory: true
+    sources: [{from: custom_field, name: "Valor do Projeto"}]
+
+  - column: responsvelclientefieldtwo
+    transform: text
+    mandatory: true
+    sources: [{from: custom_field, name: "Responsável Cliente"}]
+
+  - column: backlogfield
+    transform: yesno
+    sources: [{from: custom_field, name: "Backlog"}]
+
+  - column: plugin_fields_tipodoprojetofielddropdowns_id
+    transform: dropdown
+    itemtype: PluginFieldsTipodoprojetofielddropdown
+    sources: [{from: custom_field, name: "Tipo do Projeto"}]
+
+  - column: plugin_fields_gestofielddropdowns_id
+    transform: dropdown
+    itemtype: PluginFieldsGestofielddropdown
+    mandatory: true
+    sources: [{from: custom_field, name: "Gestão"}]
+
+  - column: plugin_fields_despesafielddropdowns_id
+    transform: dropdown
+    itemtype: PluginFieldsDespesafielddropdown
+    mandatory: true
+    sources: [{from: custom_field, name: "Despesa"}]
+
+  - column: plugin_fields_complexidadefielddropdowns_id
+    transform: dropdown
+    itemtype: PluginFieldsComplexidadefielddropdown
+    mandatory: true
+    sources: [{from: custom_field, name: "Complexidade"}]
+
+  - column: plugin_fields_pendnciafielddropdowns_id
+    transform: dropdown
+    itemtype: PluginFieldsPendnciafielddropdown
+    sources: [{from: custom_field, name: "Pendência"}]
+
+  - column: plugin_fields_tipodependnciafielddropdowns_id
+    transform: dropdown
+    itemtype: PluginFieldsTipodependnciafielddropdown
+    sources: [{from: custom_field, name: "Tipo de Pendência"}]
+
+  - column: plugin_fields_situaofaturamentofielddropdowns_id
+    transform: dropdown
+    itemtype: PluginFieldsSituaofaturamentofielddropdown
+    sources: [{from: custom_field, name: "Situação Faturamento"}]
+
+  - column: plugin_fields_enviodorelatriofielddropdowns_id
+    transform: dropdown
+    itemtype: PluginFieldsEnviodorelatriofielddropdown
+    sources: [{from: custom_field, name: "Envio do Relatório"}]
+
+  - column: plugin_fields_solicitaodoclientefielddropdowns_id
+    transform: dropdown
+    itemtype: PluginFieldsSolicitaodoclientefielddropdown
+    sources: [{from: custom_field, name: "Solicitação do Cliente"}]
+
+  - column: plugin_fields_enviodobaremofielddropdowns_id
+    transform: dropdown
+    itemtype: PluginFieldsEnviodobaremofielddropdown
+    sources: [{from: custom_field, name: "Envio do Baremos"}]
+
+  - column: plugin_fields_aprovaodoclientefielddropdowns_id
+    transform: dropdown
+    itemtype: PluginFieldsAprovaodoclientefielddropdown
+    sources: [{from: custom_field, name: "Aprovação do Cliente"}]
+
+  - column: plugin_fields_aprovaoparafinalizarfielddropdowns_id
+    transform: dropdown
+    itemtype: PluginFieldsAprovaoparafinalizarfielddropdown
+    sources: [{from: custom_field, name: "Aprovação para Finalizar"}]
+
+# ---------------------------------------------------------------------------
+# Plugin container 25 "faturamento" - spec section 6.5
+# Fed by Redmine issues of tracker 15, attached to the ROOT project.
+# ---------------------------------------------------------------------------
+container25:
+  - column: ttulofield
+    transform: text
+    sources: [{from: attribute, name: subject}]
+
+  - column: descriofield
+    transform: text
+    sources: [{from: attribute, name: description}]
+
+  - column: nnffield
+    transform: text
+    sources: [{from: custom_field, name: "No. NF"}]
+
+  # US number convention (" 5593.40" - note the leading space). Copy verbatim,
+  # strip() only. The paired project field uses the Brazilian convention;
+  # normalising either one would desync project and invoice values.
+  - column: valortotaldanffieldtwo
+    transform: text
+    sources: [{from: custom_field, name: "Valor Total da NF"}]
+
+  - column: npedidoclientefield
+    transform: text
+    sources: [{from: custom_field, name: "No. Pedido Cliente"}]
+
+  - column: conformidadefield
+    transform: yesno
+    sources: [{from: custom_field, name: "Conformidade"}]
+
+  - column: competnciafield
+    transform: text
+    sources: [{from: custom_field, name: "Competência"}]
+
+  - column: emissodanffield
+    transform: date
+    sources: [{from: custom_field, name: "Emissão da NF"}]
+
+  - column: projeodefaturamentofield
+    transform: date
+    sources: [{from: custom_field, name: "Projeção de Faturamento"}]
+
+  - column: vencimentofield
+    transform: date
+    sources: [{from: custom_field, name: "Vencimento"}]
+
+  - column: parcelaprojnanffield
+    transform: text
+    sources: [{from: custom_field, name: "Parcela Proj na NF"}]
+
+  - column: observaefield
+    transform: text
+    sources: [{from: custom_field, name: "Observações"}]
+
+# ---------------------------------------------------------------------------
+# Core task columns (glpi_projecttasks) - spec section 9.3
+# ---------------------------------------------------------------------------
+task_core:
+  - column: name
+    transform: text
+    sources: [{from: attribute, name: subject}]
+
+  - column: content
+    transform: text
+    sources: [{from: attribute, name: description}]
+
+  - column: projectstates_id
+    transform: status
+    sources: [{from: attribute, name: status.id}]
+
+  - column: plan_start_date
+    transform: date
+    sources: [{from: attribute, name: start_date}]
+
+  - column: plan_end_date
+    transform: date
+    sources: [{from: attribute, name: due_date}]
+
+# Task assignment is intentionally absent: glpi_projecttasks has no direct
+# assigned_to equivalent (it goes through ProjectTaskTeam). Spec 9.4 marks this
+# DO WERYFIKACJI -> v1 skips the assignment and warns.
+
+# ---------------------------------------------------------------------------
+# Columns that must NEVER be written
+# ---------------------------------------------------------------------------
+never_write:
+  # is_active: 0 in GLPI - writing to them is an error (spec 6.4)
+  - column: idrdmfield
+    reason: inactive
+  - column: responsvelprojetofield
+    reason: inactive
+  - column: statusfaturamentofield
+    reason: inactive
+  # Deliberate product decisions
+  - column: plugin_fields_clientefielddropdowns_id
+    reason: manual          # Cliente is set by hand after migration
+  - column: prioridadefield
+    reason: skipped         # priority is dropped globally
+
+# ---------------------------------------------------------------------------
+# Redmine fields with no GLPI counterpart - always listed in the report
+# ---------------------------------------------------------------------------
+report_only:
+  project:
+    - {name: "Cliente", reason: manual}
+    - {name: "Ano de Início", reason: no_counterpart}
+  faturamento:
+    - {name: "Cliente", reason: manual}
+    - {name: "Responsável Cliente NF", reason: no_counterpart}
+    # "Conformidade1" (cf 154) is deliberately unmapped: its meaning is
+    # unconfirmed and it is empty in every issue examined. TODO - spec 6.5.
+    - {name: "Conformidade1", reason: unverified}

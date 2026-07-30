@@ -1,0 +1,18 @@
+# Redmine issue.status.id -> GLPI projectstates_id
+# Spec section 7. Same map applies to Project and ProjectTask.
+# A status outside this map: skip the field + warning, never abort the migration.
+#
+# Keys are Redmine status IDs; "label" is informational only (not written to GLPI).
+
+statuses:
+  15: {glpi_id: 1,  label: "Novo"}
+  13: {glpi_id: 7,  label: "Em Elaboração"}
+  9:  {glpi_id: 8,  label: "Aguardando Aprovação"}
+  23: {glpi_id: 9,  label: "Planejamento"}
+  17: {glpi_id: 5,  label: "Parado"}
+  14: {glpi_id: 2,  label: "Em Execução"}
+  24: {glpi_id: 6,  label: "Monitoramento e Controle"}
+  25: {glpi_id: 10, label: "Encerramento"}
+  16: {glpi_id: 3,  label: "Finalizado"}
+  11: {glpi_id: 4,  label: "Cancelado"}
+  18: {glpi_id: 11, label: "Não Aprovado"}
