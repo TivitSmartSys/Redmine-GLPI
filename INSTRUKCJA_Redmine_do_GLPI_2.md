@@ -473,16 +473,64 @@ Przed każdym `POST` sprawdź `migration_map` — jeśli węzeł już zmigrowany
 
 ### 9.3 Mapowanie zadań (`glpi_projecttasks`)
 
-| GLPI | Źródło |
-|---|---|
-| `projects_id` | ID projektu root (zawsze) |
-| `projecttasks_id` | ID zadania-rodzica z `migration_map` |
-| `name` | `issue.subject` |
-| `content` | `issue.description` |
-| `projectstates_id` | mapa statusów |
-| `plan_start_date` / `plan_end_date` | `start_date` / `due_date` |
+Podstawa: **`IN_SCOPE_CHILD_TRACKERS` zawiera teraz `18` (Atividades)** — decyzja kierownictwa 2026-07-30. Faza 1 potwierdzona jako udana (2 projekty, w tym 1 z Faturamento). Zakres: **jednorazowa** migracja istniejących Atividades jako zadań projektu (wariant a). To NIE jest automatyzacja ciągła.
 
-**Brak `assigned_to`:** zadania często nie mają przypisanego użytkownika (issue 19089 ma wyłącznie `author`). Traktuj brak klucza jako brak wartości — nie błąd, nie fallback na `author`.
+| GLPI (`projecttasks`) | Źródło Redmine | Uwaga |
+|---|---|---|
+| `projects_id` | ID projektu root (zawsze) | zadanie nie istnieje bez projektu |
+| `projecttasks_id` | ID zadania-rodzica z `migration_map` | dla dzieci root-a: brak |
+| `name` | `issue.subject` | wprost |
+| `content` | `issue.description` | wprost |
+| `projectstates_id` | mapa statusów (ta sama co projekt) | |
+| `plan_start_date` | `issue.start_date` | może być `null` |
+| `plan_end_date` | `issue.due_date` | |
+| `real_start_date` | cf `Início Real (GLPI)` | pole zaprojektowane pod GLPI; często puste |
+| `real_end_date` | cf `Término Real (GLPI)` | j.w. |
+| `percent_done` | `issue.done_ratio` | |
+| `is_milestone` | cf `Marco` | **yesno**: Não→0, Sim→1 |
+
+**Zweryfikowane na issue 20424 (tracker 18 Atividades).** Pola custom Atividades zostały świadomie zaprojektowane pod GLPI (nazwy z sufiksem „(GLPI)") — dlatego mapują się na realne kolumny `projecttasks`, a NIE lecą do komentarza jak pola innych trackerów.
+
+#### Przypisanie wykonawcy — przez `ProjectTaskTeam`, nie pole na zadaniu
+
+**Decyzja: wykonawcą zadania jest pole `Recurso (GLPI)`, nie `assigned_to`.**
+
+Pole `Recurso (GLPI)` (cf 159) ma dwie właściwości wymagające specjalnej obsługi:
+
+1. **Jest listą** (`"multiple": true, "value": ["katielle.oliveira", ...]`). Iteruj po całej liście — nie bierz `value[0]`. Każdy wpis → osobny członek zespołu zadania.
+2. **Zawiera LOGIN, nie ID.** Istniejąca `USER_MAP` jest kluczowana ID Redmine — tu login nie pasuje. **Wymagana odwrócona mapa login→GLPI id**, zbudowana z komentarzy w `USER_MAP` (każdy wpis ma login). Login spoza mapy → pomiń tego wykonawcę + ostrzeżenie.
+
+Zapis: dla każdego rozwiązanego użytkownika wykonaj `POST /ProjectTaskTeam` z `{projecttasks_id, itemtype:"User", items_id:<glpi_user_id>}` **po** utworzeniu zadania (potrzebne jego id). W dry-run: wypisz planowanych członków zespołu, nie zapisuj.
+
+**`assigned_to` (osoba przypisana do issue) → do komentarza** (decyzja 2026-07-30). Wykonawcą zadania w GLPI jest Recurso (GLPI), ale osoba przypisana w Redmine jest zachowana jako informacja. W issue 20424 to dwie różne osoby (assigned_to=rayssa.mota, Recurso=katielle.oliveira). Linia komentarza: `Responsável no Redmine: <login>`.
+
+#### Rozwiązanie loginu Recurso → GLPI id
+
+**Decyzja: mapować login z `glpi_users.name`. POTWIERDZONE (2026-07-30): loginy Redmine są znakowo identyczne z `glpi_users.name`.** Login z pola Recurso (np. `katielle.oliveira`) rozwiązujemy do GLPI id przez zapytanie:
+```
+GET /apirest.php/User?searchText[name]=<login>
+```
+
+**Kolejność w kodzie (live-lookup główny, mapa fallbackiem):**
+- `resolve_login_via_glpi` — live-lookup przez `/User` — **ścieżka główna** (loginy potwierdzone jako identyczne, mapa ręczna zbędna, nowi użytkownicy działają automatycznie).
+- `LOGIN_TO_GLPI` — statyczna mapa login→id — **fallback** na wypadek niedostępności API lub pustej odpowiedzi.
+- Login nierozwiązany żadną ścieżką → pomiń wykonawcę + ostrzeżenie.
+
+#### Godziny bez daty → komentarz
+
+`Hora Início (formato 24h)` i `Hora Término (formato 24h)` to same godziny (np. „8", „14"), bez dnia — nie da się ich wstawić w pole datetime GLPI. **Decyzja: do komentarza** (sekcja 9.4), nie do pól dat.
+
+#### Pozostałe pola custom Atividades → komentarz
+
+`Cliente`, `Tipo de Site`, `Observações`, godziny oraz `assigned_to` — brak odpowiednika na zadaniu (albo świadomie do komentarza) → komentarz + raport (sekcja 9.4). Format komentarza dla 20424:
+```
+[Campos migrados do Redmine]
+Responsável no Redmine: rayssa.mota
+Cliente: ENEL SP
+Tipo de Site: SUBESTAÇÃO
+Hora Início: 8
+Hora Término: 14
+```
 
 ### 9.4 Pola custom zadań — NIE WOLNO ich gubić po cichu
 
@@ -509,7 +557,9 @@ Przed każdym `POST` sprawdź `migration_map` — jeśli węzeł już zmigrowany
    Nagłówek `[Campos migrados do Redmine]` jest obowiązkowy — odróżnia dane z migracji od treści wpisanej ręcznie w GLPI.
 3. Pola puste (`""` lub `null`) pomijaj w zrzucie, ale odnotuj zbiorczo w raporcie jako „puste w źródle".
 
-`DO WERYFIKACJI`: przypisanie użytkownika do zadania. `glpi_projecttasks` nie ma prostego odpowiednika `assigned_to` — przypisania idą przez `ProjectTaskTeam`. W v1: **pomiń przypisanie na zadaniach + ostrzeżenie**, chyba że test potwierdzi działający zapis przez `POST /ProjectTaskTeam`.
+**Uwaga:** pola custom Atividades oznaczone „(GLPI)" (Recurso, Início Real, Término Real) są wyjątkiem od tej reguły — mapują się na realne kolumny/relacje zadania (sekcja 9.3), nie do komentarza. Do komentarza trafiają tylko pola bez odpowiednika na zadaniu (Cliente, Tipo de Site, Observações, godziny).
+
+`DO WERYFIKACJI` (nie blokuje — test to potwierdzi): dokładny payload `POST /ProjectTaskTeam` (`itemtype:"User"` + `items_id`). Jeśli endpoint odrzuci zapis, fallback: lista wykonawców do komentarza jako „Recurso: <login>".
 
 ---
 

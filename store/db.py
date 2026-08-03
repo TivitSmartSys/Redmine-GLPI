@@ -91,6 +91,20 @@ class MigrationStore:
         )
         self._conn.commit()
 
+    def all_entries(self, limit: int = 1000) -> list[MigrationEntry]:
+        """Everything recorded so far, newest first.
+
+        The table had no listing surface: `lookup` answers about one node and
+        `entries_for_root` about one tree, so there was no way to see what had
+        already been migrated. The web panel needs exactly that.
+        """
+        rows = self._conn.execute(
+            "SELECT * FROM migration_map ORDER BY migrated_at DESC, redmine_id DESC "
+            "LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+        return [self._to_entry(row) for row in rows]
+
     def entries_for_root(self, root_redmine_id: int) -> list[MigrationEntry]:
         rows = self._conn.execute(
             """

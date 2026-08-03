@@ -21,16 +21,28 @@
 #   dropdown - name -> id lookup in the GLPI dictionary named by `itemtype`
 #
 # ---------------------------------------------------------------------------
-# GLPI dictionary contents - verified live 2026-07-29
+# GLPI dictionary contents - verified live 2026-08-03
 # ---------------------------------------------------------------------------
-# Only 3 of the 12 dictionaries are populated. The other 9 are EMPTY, so every
-# value of those fields is skipped with a warning until someone fills them in
-# on the GLPI side. We never create dictionary entries automatically (spec 6.3).
+# ALL 13 dictionaries are now populated (on 2026-07-29 only 3 of 12 were, and
+# the 9 empty ones were the common case). Entry counts:
 #
-#   Gestofielddropdown        (2) TIVIT, ITALTEL
-#   Despesafielddropdown      (4) CAPEX GDS, CAPEX NEGÓCIO, OPEX GDS, OPEX NEGÓCIO
-#   Complexidadefielddropdown (3) BAIXA, ALTA, MÉDIA
-#   all others                (0) EMPTY
+#   Clientefielddropdown              (48)   <- filled since 2026-07-29
+#   Tipodoprojetofielddropdown        (23)
+#   Gestofielddropdown                 (2)   TIVIT, ITALTEL
+#   Despesafielddropdown               (7)
+#   Complexidadefielddropdown          (3)   BAIXA, ALTA, MÉDIA
+#   Pendnciafielddropdown             (17)
+#   Tipodependnciafielddropdown       (23)
+#   Situaofaturamentofielddropdown     (3)
+#   Enviodorelatriofielddropdown       (2)
+#   Solicitaodoclientefielddropdown    (2)
+#   Enviodobaremofielddropdown         (2)
+#   Aprovaodoclientefielddropdown      (2)
+#   Aprovaoparafinalizarfielddropdown  (2)
+#
+# A populated dictionary is not the same as full coverage: a Redmine value with
+# no matching entry is still skipped and reported, never invented (spec 6.3).
+# Run `python audit_coverage.py --tracker N` to see what would be lost.
 #
 # Two open questions from the spec are settled by this check:
 #   - Appendix D asked whether "CAPEX GDS" exists in Despesa. It does.
@@ -141,6 +153,29 @@ container15:
   - column: backlogfield
     transform: yesno
     sources: [{from: custom_field, name: "Backlog"}]
+
+  # Cliente was a never_write ("preencher à mão no GLPI") while its dictionary
+  # was empty. Verified live 2026-08-03: PluginFieldsClientefielddropdown holds
+  # 48 entries and clientefield (id 96) is is_active 1, is_readonly 0,
+  # mandatory 0 - so it is migrated like any other dropdown. Values with no
+  # matching entry are still skipped and reported; we never create entries.
+  #
+  # CLOSED DECISION 2026-08-03 - do not "fix" this with an alias table.
+  # Redmine records the same two utilities under both their old and their
+  # current names, and only the current ones exist in GLPI:
+  #     COELCE (481 issues) = ENEL CE (36),  AMPLA (456 issues) = ENEL RJ (38)
+  # Deliberately left unmigrated: those 937 projects arrive with Cliente empty
+  # and a line in section 4 of their report. Mapping old names onto the Enel
+  # entries was considered and rejected - the migrator must not decide that two
+  # client names are the same company.
+  #
+  # To be registered in GLPI by hand before production (70 fills), spelled as
+  # Redmine has them - matching is case-insensitive after .strip():
+  #     CGTF (48), NEOENERGIA (8), COSERN (8), ENEVA/MPX (5), ENPECEL (1)
+  - column: plugin_fields_clientefielddropdowns_id
+    transform: dropdown
+    itemtype: PluginFieldsClientefielddropdown
+    sources: [{from: custom_field, name: "Cliente"}]
 
   - column: plugin_fields_tipodoprojetofielddropdowns_id
     transform: dropdown
@@ -301,8 +336,8 @@ never_write:
   - column: statusfaturamentofield
     reason: inactive
   # Deliberate product decisions
-  - column: plugin_fields_clientefielddropdowns_id
-    reason: manual          # Cliente is set by hand after migration
+  # Cliente used to sit here ("set by hand after migration"). Its dictionary is
+  # populated as of 2026-08-03, so it is now mapped in container15 above.
   - column: prioridadefield
     reason: skipped         # priority is dropped globally
 
@@ -311,10 +346,12 @@ never_write:
 # ---------------------------------------------------------------------------
 report_only:
   project:
-    - {name: "Cliente", reason: manual}
     - {name: "Ano de Início", reason: no_counterpart}
   faturamento:
-    - {name: "Cliente", reason: manual}
+    # Container 25 has no Cliente column at all - verified live 2026-08-03, its
+    # only "cliente" column is the text npedidoclientefield. The project-level
+    # Cliente IS migrated (container 15); this one has nowhere to go.
+    - {name: "Cliente", reason: no_counterpart}
     - {name: "Responsável Cliente NF", reason: no_counterpart}
     # "Conformidade1" (cf 154) is deliberately unmapped: its meaning is
     # unconfirmed and it is empty in every issue examined. TODO - spec 6.5.

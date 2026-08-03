@@ -288,3 +288,121 @@ REPORT_SAVED = "Relatório salvo em: {path}"
 REPORT_NOTHING_WRITTEN = (
     "Nada foi gravado no GLPI. Use --apply para executar a migração."
 )
+
+# ---------------------------------------------------------------------------
+# Painel web (web/)
+# ---------------------------------------------------------------------------
+# The panel is a second front end over the same migration code. Its strings live
+# here for the same reason as every other string: one place to audit that no
+# English or Polish leaks into what the user reads.
+
+UI_APP_TITLE = "Migração Redmine → GLPI"
+UI_APP_SUBTITLE = "Painel de operação"
+
+UI_NAV_MIGRATION = "Migração"
+UI_NAV_AUDIT = "Auditoria"
+UI_NAV_HISTORY = "Histórico"
+UI_NAV_CONFIG = "Configuração"
+
+UI_STATUS_CHECKING = "verificando…"
+UI_STATUS_ONLINE = "conectado"
+UI_STATUS_OFFLINE = "sem conexão"
+
+UI_MODE_DRY_RUN = "Simulação"
+UI_MODE_APPLY = "Gravação"
+UI_MODE_APPLY_BANNER = (
+    "MODO GRAVAÇÃO — os dados serão escritos no GLPI após a sua confirmação."
+)
+
+UI_ISSUE_LABEL = "Número da issue no Redmine"
+UI_ISSUE_PLACEHOLDER = "ex.: 20238"
+UI_RUN_DRY_RUN = "Simular"
+UI_RUN_APPLY = "Analisar e gravar"
+UI_RUNNING = "Executando…"
+
+UI_CONFIRM_TITLE = "Confirmar gravação no GLPI"
+UI_CONFIRM_BODY = (
+    "O relatório acima descreve exatamente o que será criado. Esta ação grava "
+    "no GLPI e esta versão não desfaz nem atualiza projetos já migrados."
+)
+UI_CONFIRM_HINT = "Digite 'sim' para confirmar:"
+# Same words the CLI accepts, exposed to the browser so the confirm button only
+# lights up on a valid answer. The server still validates independently - like
+# the CLI, anything else counts as "cancel", so a typo must not reach it.
+UI_CONFIRM_ACCEPT_WORDS = sorted(APPLY_CONFIRM_ACCEPT)
+UI_CONFIRM_OK = "Gravar no GLPI"
+UI_CONFIRM_CANCEL = "Cancelar"
+UI_CONFIRM_REJECTED = "Confirmação inválida. Nada foi gravado no GLPI."
+UI_CONFIRM_EXPIRED = (
+    "Tempo de confirmação esgotado; a sessão do GLPI foi encerrada. "
+    "Nada foi gravado. Execute a análise novamente."
+)
+
+UI_JOB_BUSY = "Já existe uma execução em andamento. Aguarde a conclusão."
+UI_JOB_NOT_FOUND = "Execução não encontrada ou já expirada."
+UI_ISSUE_INVALID = "Informe um número de issue válido."
+UI_TRACKER_INVALID = "Informe um número de tracker válido."
+
+UI_CARD_PROJECT = "Projeto"
+UI_CARD_TASKS = "Tarefas"
+UI_CARD_FATURAMENTO = "Faturamento"
+UI_CARD_WRITTEN = "Campos gravados"
+UI_CARD_IGNORED = "Campos ignorados"
+UI_CARD_UNRESOLVED = "Não resolvidos"
+
+UI_WARN_UNRESOLVED = "{count} referência(s) não resolvida(s)"
+UI_WARN_MANDATORY = "{count} campo(s) obrigatório(s) sem dados"
+UI_WARN_SKIPPED = "{count} subtarefa(s) ignorada(s)"
+UI_WARN_FAILURES = "{count} filho(s) ilegível(is) no Redmine"
+UI_WARN_CYCLES = "{count} ciclo(s) na árvore"
+UI_WARN_DEGRADED = "{count} linha(s) de Faturamento não gravada(s)"
+UI_WARN_INTEGRITY = "Conferência de integridade FALHOU — não grave"
+
+UI_REPORT_HEADING = "Relatório completo"
+UI_REPORT_COPY = "Copiar"
+UI_REPORT_COPIED = "Copiado"
+UI_REPORT_DOWNLOAD = "Baixar .txt"
+UI_CONSOLE_HEADING = "Execução"
+
+UI_AUDIT_TRACKER_LABEL = "Tracker do Redmine"
+UI_AUDIT_RUN = "Auditar dicionários"
+UI_AUDIT_INTRO = (
+    "Lista os valores que existem no Redmine e seriam perdidos porque não há "
+    "entrada correspondente no dicionário do GLPI. Não grava nada."
+)
+UI_AUDIT_COL_FIELD = "Campo"
+UI_AUDIT_COL_VALUE = "Valor sem correspondência"
+UI_AUDIT_COL_COUNT = "Issues afetadas"
+UI_AUDIT_COMPLETE = "Cobertura completa — nenhum valor seria perdido."
+
+UI_HISTORY_INTRO = (
+    "O que já foi criado no GLPI, segundo o mapa local (migration.db)."
+)
+UI_HISTORY_COL_REDMINE = "RDM"
+UI_HISTORY_COL_GLPI = "GLPI"
+UI_HISTORY_COL_ITEMTYPE = "Tipo"
+UI_HISTORY_COL_PARENT = "Pai (RDM)"
+UI_HISTORY_COL_STATUS = "Situação"
+UI_HISTORY_COL_DATE = "Data"
+UI_HISTORY_FILTER = "Filtrar…"
+UI_HISTORY_EMPTY = "Nenhuma migração registrada ainda."
+
+UI_CONFIG_INTRO = (
+    "Somente leitura. Para alterar, edite os arquivos em config/ e reinicie o "
+    "painel."
+)
+UI_CONFIG_ENV = "Credenciais (.env)"
+UI_CONFIG_ENV_INTRO = (
+    "Apenas a presença de cada variável é exibida; os valores nunca saem do "
+    "servidor."
+)
+UI_CONFIG_ENV_PRESENT = "definida"
+UI_CONFIG_ENV_MISSING = "ausente"
+UI_CONFIG_SCOPE = "Escopo da migração"
+UI_CONFIG_MAPPING = "Mapeamento de campos (mapping.yml)"
+UI_CONFIG_STATUS_MAP = "Mapa de status (status_map.yml)"
+UI_CONFIG_USER_MAP = "Mapa de usuários (user_map.yml)"
+UI_CONFIG_NEVER_WRITE = "Colunas nunca gravadas"
+
+UI_EMPTY = "(nenhum)"
+UI_UNEXPECTED_ERROR = "Erro inesperado: {detail}"

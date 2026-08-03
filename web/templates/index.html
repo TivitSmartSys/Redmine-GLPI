@@ -1,0 +1,185 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ ui.UI_APP_TITLE }}</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><rect width='16' height='16' rx='3' fill='%23E2202B'/></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="brand-mark" aria-hidden="true"></span>
+    <span class="brand-text">
+      <strong>{{ ui.UI_APP_TITLE }}</strong>
+      <small>{{ ui.UI_APP_SUBTITLE }}</small>
+    </span>
+  </div>
+  <div class="health" id="health">
+    <button class="chip chip-idle" type="button" data-system="glpi">
+      <span class="dot"></span><span class="chip-label">GLPI</span>
+      <span class="chip-state">{{ ui.UI_STATUS_CHECKING }}</span>
+    </button>
+    <button class="chip chip-idle" type="button" data-system="redmine">
+      <span class="dot"></span><span class="chip-label">Redmine</span>
+      <span class="chip-state">{{ ui.UI_STATUS_CHECKING }}</span>
+    </button>
+  </div>
+</header>
+
+<div class="apply-banner" id="apply-banner" hidden role="status">
+  <span class="icon" aria-hidden="true">!</span>{{ ui.UI_MODE_APPLY_BANNER }}
+</div>
+
+<div class="shell">
+  <nav class="sidebar" aria-label="Seções">
+    <button type="button" class="nav-item is-active" data-view="migration">{{ ui.UI_NAV_MIGRATION }}</button>
+    <button type="button" class="nav-item" data-view="audit">{{ ui.UI_NAV_AUDIT }}</button>
+    <button type="button" class="nav-item" data-view="history">{{ ui.UI_NAV_HISTORY }}</button>
+    <button type="button" class="nav-item" data-view="config">{{ ui.UI_NAV_CONFIG }}</button>
+  </nav>
+
+  <main>
+
+    <!-- ============================ MIGRAÇÃO ============================ -->
+    <section class="view is-active" id="view-migration">
+      <div class="card card-run">
+        <div class="field">
+          <label for="issue">{{ ui.UI_ISSUE_LABEL }}</label>
+          <input type="number" id="issue" inputmode="numeric" min="1"
+                 placeholder="{{ ui.UI_ISSUE_PLACEHOLDER }}" autocomplete="off">
+        </div>
+        <div class="field">
+          <span class="label">Modo</span>
+          <div class="segmented" id="mode" role="radiogroup">
+            <button type="button" role="radio" aria-checked="true" class="is-active"
+                    data-mode="dry">{{ ui.UI_MODE_DRY_RUN }}</button>
+            <button type="button" role="radio" aria-checked="false"
+                    data-mode="apply">{{ ui.UI_MODE_APPLY }}</button>
+          </div>
+        </div>
+        <button type="button" class="btn btn-primary" id="run">{{ ui.UI_RUN_DRY_RUN }}</button>
+      </div>
+
+      <p class="notice" id="run-error" hidden></p>
+
+      <div class="card card-console" id="console-card" hidden>
+        <div class="card-head">
+          <h2>{{ ui.UI_CONSOLE_HEADING }}</h2>
+          <span class="spinner" id="run-spinner" hidden aria-hidden="true"></span>
+        </div>
+        <pre class="console" id="console" tabindex="0"></pre>
+      </div>
+
+      <div id="summary" hidden>
+        <div class="kpi-row" id="kpi-row"></div>
+        <div class="chips" id="warnings"></div>
+      </div>
+
+      <div class="card card-report" id="report-card" hidden>
+        <div class="card-head">
+          <h2>{{ ui.UI_REPORT_HEADING }}</h2>
+          <div class="actions">
+            <button type="button" class="btn btn-ghost" id="copy-report">{{ ui.UI_REPORT_COPY }}</button>
+            <a class="btn btn-ghost" id="download-report" download>{{ ui.UI_REPORT_DOWNLOAD }}</a>
+          </div>
+        </div>
+        <pre class="report" id="report" tabindex="0"></pre>
+      </div>
+    </section>
+
+    <!-- ============================ AUDITORIA =========================== -->
+    <section class="view" id="view-audit">
+      <p class="intro">{{ ui.UI_AUDIT_INTRO }}</p>
+      <div class="card card-run">
+        <div class="field">
+          <label for="tracker">{{ ui.UI_AUDIT_TRACKER_LABEL }}</label>
+          <input type="number" id="tracker" inputmode="numeric" min="1" value="14" autocomplete="off">
+        </div>
+        <button type="button" class="btn btn-primary" id="run-audit">{{ ui.UI_AUDIT_RUN }}</button>
+      </div>
+
+      <p class="notice" id="audit-error" hidden></p>
+
+      <div id="audit-summary" hidden>
+        <div class="kpi-row" id="audit-kpi"></div>
+        <div class="card">
+          <div class="card-head"><h2>Valores sem correspondência</h2></div>
+          <div class="table-wrap">
+            <table class="data" id="audit-table">
+              <thead><tr>
+                <th>{{ ui.UI_AUDIT_COL_FIELD }}</th>
+                <th>{{ ui.UI_AUDIT_COL_VALUE }}</th>
+                <th class="num">{{ ui.UI_AUDIT_COL_COUNT }}</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card card-console" id="audit-console-card" hidden>
+        <div class="card-head">
+          <h2>{{ ui.UI_CONSOLE_HEADING }}</h2>
+          <span class="spinner" id="audit-spinner" hidden aria-hidden="true"></span>
+        </div>
+        <pre class="console" id="audit-console" tabindex="0"></pre>
+      </div>
+    </section>
+
+    <!-- ============================ HISTÓRICO =========================== -->
+    <section class="view" id="view-history">
+      <p class="intro">{{ ui.UI_HISTORY_INTRO }}</p>
+      <div class="card">
+        <div class="card-head">
+          <input type="search" id="history-filter" class="filter"
+                 placeholder="{{ ui.UI_HISTORY_FILTER }}" autocomplete="off">
+          <button type="button" class="btn btn-ghost" id="history-reload">Atualizar</button>
+        </div>
+        <div class="table-wrap">
+          <table class="data" id="history-table">
+            <thead><tr>
+              <th class="num">{{ ui.UI_HISTORY_COL_REDMINE }}</th>
+              <th class="num">{{ ui.UI_HISTORY_COL_GLPI }}</th>
+              <th>{{ ui.UI_HISTORY_COL_ITEMTYPE }}</th>
+              <th class="num">{{ ui.UI_HISTORY_COL_PARENT }}</th>
+              <th>{{ ui.UI_HISTORY_COL_STATUS }}</th>
+              <th>{{ ui.UI_HISTORY_COL_DATE }}</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p class="empty" id="history-empty" hidden>{{ ui.UI_HISTORY_EMPTY }}</p>
+      </div>
+    </section>
+
+    <!-- =========================== CONFIGURAÇÃO ========================= -->
+    <section class="view" id="view-config">
+      <p class="intro">{{ ui.UI_CONFIG_INTRO }}</p>
+      <div id="config-body"></div>
+    </section>
+
+  </main>
+</div>
+
+<!-- ======================= CONFIRMAÇÃO DE GRAVAÇÃO ====================== -->
+<div class="modal-backdrop" id="confirm-modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+    <h2 id="confirm-title"><span class="icon" aria-hidden="true">!</span>{{ ui.UI_CONFIRM_TITLE }}</h2>
+    <p>{{ ui.UI_CONFIRM_BODY }}</p>
+    <label for="confirm-input">{{ ui.UI_CONFIRM_HINT }}</label>
+    <input type="text" id="confirm-input" autocomplete="off" spellcheck="false" placeholder="sim">
+    <p class="notice" id="confirm-error" hidden>{{ ui.UI_CONFIRM_REJECTED }}</p>
+    <div class="modal-actions">
+      <button type="button" class="btn btn-ghost" id="confirm-cancel">{{ ui.UI_CONFIRM_CANCEL }}</button>
+      <button type="button" class="btn btn-primary" id="confirm-ok" disabled>{{ ui.UI_CONFIRM_OK }}</button>
+    </div>
+  </div>
+</div>
+
+<script id="ui-strings" type="application/json">{{ ui | tojson }}</script>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
