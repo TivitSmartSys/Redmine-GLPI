@@ -245,6 +245,33 @@ def check_already_migrated(glpi: GlpiClient, issue_id: int) -> int | None:
     return int(rows[0].get("items_id") or 0) or None
 
 
+def project_create_payload(plan: ProjectPlan) -> dict:
+    """Input for POST /Project: the core columns AND the container-15 values.
+
+    Container 15 is a Fields-plugin container of type "dom", i.e. its fields
+    live on the Project's own form. The plugin therefore validates its
+    mandatory columns inside the Project's add hook, reading them from the
+    Project input - not from the container row we write afterwards. Posting the
+    core columns alone makes GLPI reject the project itself with
+        ERROR_GLPI_ADD "Alguns campos obrigatórios estão vazios :
+        Gestão, Responsável Cliente, Despesa, Complexidade, Valor do Projeto"
+    even when the plan holds all five values (verified live 2026-08-04: fields
+    161, 162, 163, 164 and 189 of container 15 carry mandatory=1; they were not
+    flagged mandatory when the first projects were migrated on 2026-07-30).
+
+    Sending every container-15 value, not just the five mandatory ones, keeps
+    this working if someone flags another column mandatory later. The plugin
+    creates the container row from these values; write_additional_fields_row
+    then finds that row and updates it, which is what fills in the columns the
+    plugin skips - rdmfield, the dedup marker, among them (it is is_active 0).
+    """
+    payload = dict(plan.container15.payload)
+    # Core columns win on any name clash: they are the ones GLPI's own Project
+    # table understands.
+    payload.update(plan.core.payload)
+    return payload
+
+
 def apply_plan(
     glpi: GlpiClient, plan: ProjectPlan, store: MigrationStore
 ) -> bool:
@@ -257,8 +284,8 @@ def apply_plan(
     print()
     print(messages.APPLY_HEADER)
 
-    # 1. Project
-    project_id = glpi.create_project(plan.core.payload)
+    # 1. Project - carries the container-15 values too, see the docstring above.
+    project_id = glpi.create_project(project_create_payload(plan))
     plan.glpi_project_id = project_id
     plan.glpi_ids[plan.issue_id] = project_id
     store.record(plan.issue_id, project_id, "Project", status=STATUS_OK)
