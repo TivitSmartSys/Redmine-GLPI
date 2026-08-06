@@ -24,18 +24,39 @@ PROJECT_ROOT = CONFIG_DIR.parent
 CONTAINER_ID_ADDITIONAL_FIELDS = 15
 ITEMTYPE_ADDITIONAL_FIELDS = "PluginFieldsProjectcamposadicionaisprojeto"
 
-# Container 25 - "faturamento", type "tab", multiple rows per Project.
-# Container 26 is the twin for another itemtype and must NOT be used here.
-CONTAINER_ID_FATURAMENTO = 25
-ITEMTYPE_FATURAMENTO = "PluginFieldsProjectfaturamento"
+# Container 26 - "faturamento", type "tab", attached to ProjectTask.
+#
+# CHANGED 2026-08-06. Until now Faturamento was a container-25 row on the
+# Project ("container 26 is the twin for another itemtype and must NOT be used
+# here"). GLPI was reconfigured: a tracker-15 issue is now a ProjectTask of type
+# Faturamento carrying a container-26 row, and container 25 is abandoned - it is
+# still is_active 1 on the instance, we simply never write to it again.
+# Container 26 uses its own column spelling (the "...fieldtwo" suffix), so the
+# two containers are NOT interchangeable; see the container26 section of
+# mapping.yml.
+CONTAINER_ID_FATURAMENTO = 26
+ITEMTYPE_FATURAMENTO = "PluginFieldsProjecttaskfaturamento"
+
+# Container 16 - "camposadicionaistarefasdeprojeto", type "dom", on ProjectTask.
+# Deliberately NOT written in this version (closed decision 2026-08-06): of its
+# five fields three are is_active 0, and the dictionary behind the one real
+# counterpart (tipodesitefield <- "Tipo de Site") is empty, so every value would
+# be skipped anyway. Recorded here because it is a "dom" container: the moment
+# any of its fields is flagged mandatory, POST /ProjectTask starts failing the
+# same way POST /Project did, and the fix is the one in main.project_create_payload.
+CONTAINER_ID_TASK_ADDITIONAL_FIELDS = 16
 
 # ---------------------------------------------------------------------------
 # Tracker scope (spec section 1a + overriding rules from PROMPT_dla_Claude_Code)
 # ---------------------------------------------------------------------------
 
-# Redmine tracker that becomes a container-25 row instead of a ProjectTask.
-# This is the ONLY tracker that drives branching logic (spec section 3).
+# Redmine tracker that becomes a ProjectTask of type Faturamento carrying a
+# container-26 row, instead of a plain ProjectTask. This is the ONLY tracker
+# that drives branching logic (spec section 3).
 TRACKER_FATURAMENTO = 15
+
+# Redmine tracker 18 "Atividades" - migrated as a ProjectTask of type Atividade.
+TRACKER_ATIVIDADES = 18
 
 # Trackers allowed to become a GLPI ProjectTask when found as a descendant.
 # Everything else falls under the "child out of scope -> skip + report" rule
@@ -45,11 +66,27 @@ TRACKER_FATURAMENTO = 15
 #   39 Projeto CEMIG    - entirely out of scope
 #   40 Subtarefa Cemig  - child of CEMIG projects only, out of scope
 #   41 Compras          - out of scope as a separate entity
-#   18 Atividades       - phase two
-IN_SCOPE_TASK_TRACKERS = frozenset({14, 42})
+#
+# 18 Atividades moved OUT of phase two on 2026-08-06: GLPI now has a
+# ProjectTaskType "Atividade", so the 1259 issues become typed tasks.
+IN_SCOPE_TASK_TRACKERS = frozenset({14, 42, 18})
 
-# Trackers accepted as a migration root.
+# Trackers accepted as a migration root. Atividades is a task-only tracker -
+# it is never a root, only a descendant.
 IN_SCOPE_ROOT_TRACKERS = frozenset({14, 42})
+
+# ---------------------------------------------------------------------------
+# glpi_projecttasktypes - verified live 2026-08-06.
+# Only trackers listed here get a type; 14 and 42 deliberately get none, so an
+# untyped task reads as intentional rather than as a failed lookup.
+# ---------------------------------------------------------------------------
+PROJECTTASKTYPE_FATURAMENTO = 3
+PROJECTTASKTYPE_ATIVIDADE = 4
+
+TRACKER_TO_PROJECTTASKTYPE = {
+    TRACKER_FATURAMENTO: PROJECTTASKTYPE_FATURAMENTO,
+    TRACKER_ATIVIDADES: PROJECTTASKTYPE_ATIVIDADE,
+}
 
 # ---------------------------------------------------------------------------
 # Container 15 fields flagged mandatory in GLPI (spec section 11.1).
@@ -62,6 +99,41 @@ MANDATORY_CONTAINER15_COLUMNS = (
     "plugin_fields_gestofielddropdowns_id",
     "plugin_fields_despesafielddropdowns_id",
     "plugin_fields_complexidadefielddropdowns_id",
+)
+
+# ---------------------------------------------------------------------------
+# Container 26 fields flagged mandatory in GLPI (verified live 2026-08-06).
+#
+# These behave DIFFERENTLY from the container-15 ones above, and the report must
+# not conflate the two. Container 15 is type "dom": its values travel inside the
+# POST /Project input, where the plugin's pre_item_add hook validates them, so a
+# missing value REJECTS the project (that is the ERROR_GLPI_ADD failure of
+# 2026-08-04). Container 26 is type "tab": we write its row straight to the
+# container itemtype over REST, a path that never reaches validateValues() -
+# verified in plugin source 1.24.3, where the generated row class extends
+# PluginFieldsAbstractContainerInstance and neither overrides prepareInputForAdd
+# nor calls validateValues(). A missing value here leaves the row incomplete;
+# it does not refuse the write. GLPI's own UI will refuse to save the tab by
+# hand until someone fills it.
+# ---------------------------------------------------------------------------
+# NOTE the two spellings. A Fields-plugin column keeps the field's own name for
+# every type EXCEPT dropdown, where the column is
+# `plugin_fields_<name>dropdowns_id` - confirmed 2026-08-06 against the live
+# container-25 row, which stores `plugin_fields_prioridadefielddropdowns_id`
+# next to plain `ttulofield`. The GLPI field is named `statusfaturamentofield`;
+# its COLUMN is the long form below.
+#
+# plugin_fields_statusfaturamentofielddropdowns_id is listed here but
+# deliberately never written (see never_write in mapping.yml): the task's core
+# Estado already carries that status. It stays in this tuple ON PURPOSE so
+# report section 5 keeps showing the open GLPI-side request to unflag it.
+# Remove the entry once an admin has done so.
+MANDATORY_CONTAINER26_COLUMNS = (
+    "ttulofieldtwo",
+    "plugin_fields_statusfaturamentofielddropdowns_id",
+    "valortotaldanffieldtwo",
+    "responsvelclientenffield",
+    "plugin_fields_prioridadefielddropdowns_id",
 )
 
 # ---------------------------------------------------------------------------

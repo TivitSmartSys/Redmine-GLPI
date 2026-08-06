@@ -2,8 +2,14 @@
 
 Model (spec section 3): the root is always a Project and every descendant is
 normally a ProjectTask. The tracker drives exactly ONE branch - tracker 15
-(Faturamento) becomes a container-25 row instead of a task - plus the scope
+(Faturamento) becomes a ProjectTask of type Faturamento carrying a container-26
+row, attached to the ROOT project rather than to its own parent - plus the scope
 rule from section 1a.
+
+Revised 2026-08-06: a Faturamento used to be a container-25 row on the Project,
+which is why it is still classified separately from a plain TASK. Tracker 18
+(Atividades) joined IN_SCOPE_TASK_TRACKERS in the same change and needs no
+branch of its own - it is an ordinary task that happens to get a task type.
 
 Scope rule (closed decision, variant c): a child whose tracker is out of scope
 is NOT created in GLPI; it goes to the report instead. Section 3 and Appendix D
@@ -13,8 +19,8 @@ exactly this rule.
 
 Nothing disappears silently: the tree is walked in full even below a skipped
 node, every skipped node gets its own report line, and a tracker-15 descendant
-still reaches container 25 because that container attaches to the Project, not
-to the task hierarchy.
+is still migrated because its task attaches to the ROOT project, not to the task
+hierarchy it was found in.
 """
 
 from __future__ import annotations
@@ -113,9 +119,10 @@ def _visit(
         )
     )
 
-    # A task can only hang off a task that was actually created. Faturamento
-    # rows are exempt: they attach to the Project, so a skipped ancestor does
-    # not orphan them.
+    # A task can only hang off a task that was actually created. Faturamento is
+    # exempt even though it is now a task itself: its task is created on the
+    # ROOT project with no projecttasks_id, so a skipped ancestor cannot orphan
+    # it (see apply_plan step 4).
     child_ancestor_skipped = ancestor_skipped or disposition is Disposition.SKIPPED
     for child in node.children:
         _visit(
@@ -137,7 +144,8 @@ def _classify(
     tracker_id = node.tracker_id
 
     # The single tracker-driven branch in the whole migration. Checked before
-    # the scope rule so a Faturamento under a skipped parent is still captured.
+    # the scope rule so a Faturamento under a skipped parent is still captured -
+    # it lands on the root project either way.
     if tracker_id == TRACKER_FATURAMENTO:
         return Disposition.FATURAMENTO, ""
 

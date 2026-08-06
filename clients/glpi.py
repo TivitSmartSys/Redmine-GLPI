@@ -328,17 +328,23 @@ class GlpiClient:
             return row_id
         return self.create_container_row(ITEMTYPE_ADDITIONAL_FIELDS, payload)
 
-    def create_faturamento_row(self, project_id: int, values: dict) -> int:
-        """Container 25 - "tab" type, so several rows per project are allowed.
+    def create_faturamento_row(self, task_id: int, values: dict) -> int:
+        """Container 26 - "tab" type, attached to a ProjectTask.
 
-        Rows are attached to Project only, never to ProjectTask. The twin
-        container 26 is not used by this migration.
+        CHANGED 2026-08-06: rows used to hang off the Project (container 25).
+        They now hang off the Faturamento task, one row per task.
+
+        A "tab" container row is written straight to the container itemtype,
+        which never reaches the plugin's validateValues() - verified in plugin
+        source 1.24.3. Container 26's five mandatory flags therefore do not
+        refuse this write; a missing value only leaves the row incomplete, and
+        the dry-run report says so.
         """
         payload = dict(values)
         payload.update(
             {
-                "items_id": int(project_id),
-                "itemtype": "Project",
+                "items_id": int(task_id),
+                "itemtype": "ProjectTask",
                 "plugin_fields_containers_id": CONTAINER_ID_FATURAMENTO,
             }
         )

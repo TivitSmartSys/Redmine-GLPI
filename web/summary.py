@@ -12,6 +12,7 @@ verbatim next to them.
 
 from __future__ import annotations
 
+from config.settings import MANDATORY_CONTAINER26_COLUMNS
 from report.reporter import ProjectPlan
 from transform.mapper import Outcome
 
@@ -42,10 +43,31 @@ def summarise(plan: ProjectPlan) -> dict:
     counts = _outcome_counts(plan)
     tracker = plan.issue.get("tracker") or {}
 
+    # Two counts, never one. Container 15 is validated inside POST /Project, so
+    # a gap there REFUSES the write; container 26 is a direct row write that
+    # skips validation, so a gap there only leaves the row incomplete. Folding
+    # them together would turn a blocker and a nuisance into the same chip.
     missing_mandatory = [
         *plan.core.missing_mandatory,
         *plan.container15.missing_mandatory,
     ]
+    missing_mandatory_faturamento = []
+    for item in plan.faturamento:
+        if item.core is not None:
+            missing_mandatory_faturamento.extend(item.core.missing_mandatory)
+        missing_mandatory_faturamento.extend(item.result.missing_mandatory)
+        # Mapped columns already contributed via missing_mandatory above; only
+        # count the ones no mapping entry claims, or they are counted twice.
+        claimed = {
+            record.target_column
+            for record in item.result.records
+            if record.target_column
+        }
+        missing_mandatory_faturamento.extend(
+            column
+            for column in MANDATORY_CONTAINER26_COLUMNS
+            if column not in item.result.payload and column not in claimed
+        )
     degraded = [item for item in plan.faturamento if not item.written]
 
     return {
@@ -65,6 +87,7 @@ def summarise(plan: ProjectPlan) -> dict:
         "ignored": counts["no_counterpart"] + counts["unresolved"],
         "unresolved": counts["unresolved"],
         "missing_mandatory": len(missing_mandatory),
+        "missing_mandatory_faturamento": len(missing_mandatory_faturamento),
         "never_write": len(plan.never_write),
         "skipped_children": len(plan.skipped_children),
         "ignored_relations": len(plan.ignored_relations),

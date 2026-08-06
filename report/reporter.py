@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from config.settings import MANDATORY_CONTAINER26_COLUMNS
 from report import messages
 from transform.mapper import FieldRecord, MappingResult, Outcome
 
@@ -37,11 +38,19 @@ class PlannedTask:
 
 @dataclass
 class PlannedFaturamento:
-    """One tracker-15 issue that becomes a container-25 row."""
+    """One tracker-15 issue that becomes a typed ProjectTask + container-26 row.
+
+    Two payloads, two GLPI ids: `core`/`glpi_task_id` for the ProjectTask of
+    type Faturamento, `result`/`glpi_id` for the container-26 row hanging off
+    it. Before 2026-08-06 this was a single container-25 row on the Project,
+    which is why the container payload keeps the plain name `result`.
+    """
 
     issue: dict
-    result: MappingResult
+    result: MappingResult          # container-26 columns
+    core: MappingResult | None = None  # ProjectTask columns
     origin: str = "relation"  # 'relation' | 'child'
+    glpi_task_id: int | None = None
     glpi_id: int | None = None
     written: bool = True  # False when degraded to report-only
 
@@ -94,6 +103,8 @@ class ProjectPlan:
         for task in self.tasks:
             records.extend(task.result.records)
         for item in self.faturamento:
+            if item.core is not None:
+                records.extend(item.core.records)
             records.extend(item.result.records)
         return records
 
@@ -212,7 +223,16 @@ class Reporter:
                         subject=item.issue.get("subject") or "",
                     )
                 )
-                self._payload_lines(item.result, indent=4)
+                # Two writes per Faturamento since 2026-08-06: the task first,
+                # then the container-26 row that hangs off it. Rendered as two
+                # blocks so the reader sees which payload goes where.
+                if item.core is not None:
+                    self._add("    " + messages.REPORT_FATURAMENTO_TASK_PAYLOAD)
+                    self._payload_lines(item.core, indent=6)
+                    self._add("    " + messages.REPORT_FATURAMENTO_ROW_PAYLOAD)
+                    self._payload_lines(item.result, indent=6)
+                else:
+                    self._payload_lines(item.result, indent=4)
 
     def _payload_lines(self, result: MappingResult, indent: int = 4) -> None:
         written = result.by_outcome(Outcome.WRITTEN)
@@ -280,20 +300,72 @@ class Reporter:
         )
 
     def _section_mandatory(self) -> None:
+        """Missing mandatory columns, split by whether they block the write.
+
+        Container 15 refuses the project; container 26 only degrades the row.
+        Reporting them under one heading would teach the wrong lesson right
+        after the failure that made this distinction matter.
+        """
         self._section(messages.REPORT_SECTION_5)
         self._add(messages.REPORT_SECTION_5_INTRO)
-        missing = [
+
+        blocking = [
             *self._plan.core.missing_mandatory,
             *self._plan.container15.missing_mandatory,
         ]
-        if not missing:
+        non_blocking = []
+        for item in self._plan.faturamento:
+            if item.core is not None:
+                non_blocking.extend(item.core.missing_mandatory)
+            non_blocking.extend(item.result.missing_mandatory)
+            non_blocking.extend(self._unmapped_mandatory(item))
+
+        if not blocking and not non_blocking:
             self._add(messages.REPORT_NOTHING)
             return
-        for record in missing:
-            self._add(
-                f"  - {record.target_column} (origem: {record.source_label}) "
-                f"— {record.detail}"
+
+        for header, records in (
+            (messages.REPORT_SECTION_5_BLOCKING, blocking),
+            (messages.REPORT_SECTION_5_NON_BLOCKING, non_blocking),
+        ):
+            if not records:
+                continue
+            self._add()
+            self._add(header)
+            for record in records:
+                origin = f" [{record.origin}]" if record.origin else ""
+                self._add(
+                    f"  - {record.target_column}{origin} "
+                    f"(origem: {record.source_label}) — {record.detail}"
+                )
+
+    @staticmethod
+    def _unmapped_mandatory(item: PlannedFaturamento) -> list[FieldRecord]:
+        """Mandatory container-26 columns that no mapping entry even claims.
+
+        `missing_mandatory` can only report columns a mapping entry produced a
+        record for. A column that no entry claims at all would otherwise vanish
+        from section 5 entirely - exactly the silent gap spec 13 rule 7 forbids.
+
+        Columns that ARE mapped are skipped here even when they did not reach
+        the payload: an unresolved value already has its own FieldRecord, and
+        emitting a second line would double-count it in the same section.
+        """
+        claimed = {
+            record.target_column for record in item.result.records if record.target_column
+        }
+        return [
+            FieldRecord(
+                source_label=messages.REPORT_NO_SOURCE,
+                outcome=Outcome.EMPTY_SOURCE,
+                target_column=column,
+                mandatory=True,
+                origin=f"RDM {item.issue_id}",
+                detail=messages.REPORT_MANDATORY_UNMAPPED,
             )
+            for column in MANDATORY_CONTAINER26_COLUMNS
+            if column not in item.result.payload and column not in claimed
+        ]
 
     def _section_skipped_children(self) -> None:
         self._section(messages.REPORT_SECTION_SKIPPED)

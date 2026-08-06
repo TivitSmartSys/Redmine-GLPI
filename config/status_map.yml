@@ -16,3 +16,17 @@ statuses:
   16: {glpi_id: 3,  label: "Finalizado"}
   11: {glpi_id: 4,  label: "Cancelado"}
   18: {glpi_id: 11, label: "Não Aprovado"}
+
+  # Faturamento statuses, added 2026-08-06 with tracker 15 becoming a real
+  # ProjectTask. Without these three lines 3036 of the 3414 Faturamentos (88.9%)
+  # would be created with no "Estado" at all - status 19 alone covers 2960.
+  #
+  # The GLPI side of this map was populated by hand shortly before; ids 15/16/17
+  # are those new glpi_projectstates rows.
+  19: {glpi_id: 15, label: "NF Emitida"}      # 2960 issues
+  21: {glpi_id: 16, label: "NF Paga"}         #   68 issues
+  # glpi_projectstates holds BOTH 14 "NF solicitada" and 17 "NF Solicitada".
+  # Closed decision 2026-08-06: use 17, which matches the Redmine spelling and
+  # belongs to the same block as 15/16. Id 14 is a duplicate and should be
+  # merged or deleted on the GLPI side.
+  22: {glpi_id: 17, label: "NF Solicitada"}   #    8 issues

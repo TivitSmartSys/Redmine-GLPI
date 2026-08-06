@@ -22,6 +22,7 @@ from clients.glpi import GlpiClient  # noqa: E402
 from clients.redmine import RedmineClient  # noqa: E402
 from config.settings import (  # noqa: E402
     DEFAULT_DB_PATH,
+    ITEMTYPE_FATURAMENTO,
     ConfigError,
     load_settings,
     load_yaml,
@@ -70,7 +71,7 @@ def dropdown_itemtypes(mapping: dict) -> list[str]:
     itemtype (spec 9.0 step 3: one call per dictionary, not per field).
     """
     itemtypes: list[str] = []
-    for section in ("container15", "container25", "project_core", "task_core"):
+    for section in ("container15", "container26", "project_core", "task_core"):
         for entry in mapping.get(section) or []:
             if entry.get("transform") != "dropdown":
                 continue
@@ -187,12 +188,15 @@ def build_project_plan(
                 )
             )
         elif planned.disposition is Disposition.FATURAMENTO:
-            # A tracker-15 descendant becomes a container-25 row on the ROOT
-            # project, never a task (spec 6.5, step 2).
+            # A tracker-15 descendant becomes a ProjectTask of type Faturamento
+            # on the ROOT project carrying a container-26 row - never a plain
+            # task, and never nested under its Redmine parent (spec 6.5, step 2).
+            fat_core, fat_container = mapper.map_faturamento(planned.node.issue)
             faturamento.append(
                 PlannedFaturamento(
                     issue=planned.node.issue,
-                    result=mapper.map_faturamento(planned.node.issue),
+                    core=fat_core,
+                    result=fat_container,
                     origin="child",
                 )
             )
@@ -210,10 +214,12 @@ def build_project_plan(
     # Second Faturamento path: relations of the root issue (spec 6.5, step 1).
     discovery = discover_from_relations(redmine, root_issue)
     for related_issue in discovery.issues:
+        fat_core, fat_container = mapper.map_faturamento(related_issue)
         faturamento.append(
             PlannedFaturamento(
                 issue=related_issue,
-                result=mapper.map_faturamento(related_issue),
+                core=fat_core,
+                result=fat_container,
                 origin="relation",
             )
         )
@@ -279,7 +285,9 @@ def apply_plan(
 
     Order is fixed by spec 9.2: project, then the container-15 row (always
     carrying rdmfield, even if every other field is empty), then the tasks
-    parent-before-child, then the container-25 rows.
+    parent-before-child, then the Faturamento tasks with their container-26
+    rows (revised 2026-08-06 - these used to be container-25 rows on the
+    project).
     """
     print()
     print(messages.APPLY_HEADER)
@@ -328,28 +336,49 @@ def apply_plan(
         )
         print(messages.APPLY_TASK_CREATED.format(glpi_id=task_id, issue_id=task.issue_id))
 
-    # 4. Container 25 rows. Container 25 is type "tab", so several rows per
-    #    project are expected. If GLPI nevertheless rejects a second row, fall
-    #    back to degraded mode: keep the first, report the rest in full, log
-    #    once, and do not abort (spec 6.5).
-    degraded = False
+    # 4. Faturamento: one ProjectTask of type Faturamento per tracker-15 issue,
+    #    then its container-26 row. The task always hangs off the ROOT project
+    #    with no projecttasks_id - a Faturamento is never nested under its
+    #    Redmine parent, which is also why a skipped ancestor does not orphan it.
+    #
+    #    The task is the load-bearing write; the container row is not. If GLPI
+    #    rejects the row, keep the task, report the values in full and carry on
+    #    (spec 6.5) - aborting here would leave a project half written.
     for item in plan.faturamento:
-        if degraded:
-            item.written = False
-            continue
+        existing = store.lookup(item.issue_id, "ProjectTask")
+        if existing:
+            item.glpi_task_id = existing.glpi_id
+        else:
+            task_payload = dict(item.core.payload)
+            task_payload["projects_id"] = project_id
+            item.glpi_task_id = glpi.create_project_task(task_payload)
+            store.record(
+                item.issue_id, item.glpi_task_id, "ProjectTask", status=STATUS_OK
+            )
+            print(
+                messages.APPLY_FATURAMENTO_TASK_CREATED.format(
+                    glpi_id=item.glpi_task_id, issue_id=item.issue_id
+                )
+            )
+
         try:
-            row = glpi.create_faturamento_row(project_id, item.result.payload)
+            row = glpi.create_faturamento_row(item.glpi_task_id, item.result.payload)
         except ApiError as exc:
-            degraded = True
             item.written = False
-            note = messages.APPLY_FATURAMENTO_DEGRADED.format(detail=messages.redact(exc))
+            note = messages.APPLY_FATURAMENTO_DEGRADED.format(
+                issue_id=item.issue_id,
+                task_id=item.glpi_task_id,
+                detail=messages.redact(exc),
+            )
             print(note)
             plan.notes.append(note)
             continue
         item.glpi_id = row
-        store.record(item.issue_id, row, "PluginFieldsProjectfaturamento", status=STATUS_OK)
+        store.record(item.issue_id, row, ITEMTYPE_FATURAMENTO, status=STATUS_OK)
         print(
-            messages.APPLY_FATURAMENTO_CREATED.format(row_id=row, issue_id=item.issue_id)
+            messages.APPLY_FATURAMENTO_CREATED.format(
+                row_id=row, task_id=item.glpi_task_id, issue_id=item.issue_id
+            )
         )
 
     print(messages.APPLY_DONE)

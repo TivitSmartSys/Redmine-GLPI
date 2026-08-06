@@ -174,7 +174,9 @@ REPORT_SECTION_7 = "7. CONFERÊNCIA DE INTEGRIDADE"
 REPORT_PROJECT_LINE = 'Projeto GLPI: "{name}"'
 REPORT_ORIGIN_LINE = "  Origem: RDM {issue_id} (tracker {tracker_id} {tracker_name})"
 REPORT_TASKS_LINE = "  Tarefas a criar: {count}"
-REPORT_FATURAMENTO_LINE = "  Linhas de Faturamento (container 25): {count}"
+REPORT_FATURAMENTO_LINE = (
+    "  Faturamentos (tarefa tipo Faturamento + container 26): {count}"
+)
 REPORT_CORE_HEADER = "  Campos do projeto (glpi_projects):"
 REPORT_CONTAINER15_HEADER = "  Campos adicionais (container 15):"
 REPORT_NOTHING = "  (nenhum)"
@@ -192,8 +194,25 @@ REPORT_SECTION_4_INTRO = (
     "O campo foi ignorado — NENHUM valor foi inventado."
 )
 REPORT_SECTION_5_INTRO = (
-    "  O GLPI marca estas colunas como obrigatórias. Sem dados, a gravação "
-    "pode ser recusada."
+    "  O GLPI marca estas colunas como obrigatórias. O efeito de deixá-las "
+    "vazias depende do container — veja cada bloco abaixo."
+)
+# The two blocks behave differently and must never be merged. Container 15
+# travels inside POST /Project, where the plugin validates it: a missing value
+# REFUSES the project (the ERROR_GLPI_ADD failure of 2026-08-04). Container 26
+# is written straight to the container itemtype over REST, a path that never
+# reaches validateValues(), so a missing value only leaves the row incomplete.
+REPORT_SECTION_5_BLOCKING = (
+    "  Container 15 (projeto) — a gravação do PROJETO é recusada sem estes dados:"
+)
+REPORT_NO_SOURCE = "(sem origem no Redmine)"
+REPORT_MANDATORY_UNMAPPED = (
+    "coluna obrigatória sem mapeamento — preencher à mão no GLPI"
+)
+REPORT_SECTION_5_NON_BLOCKING = (
+    "  Container 26 (faturamento) — a linha é gravada mesmo assim, porém "
+    "incompleta. O próprio GLPI recusará salvar a aba à mão até alguém "
+    "preencher:"
 )
 
 REPORT_INTEGRITY_INTRO = (
@@ -214,7 +233,8 @@ REPORT_TREE_HEADER = "  Árvore (Redmine → GLPI):"
 REPORT_TREE_PROJECT = "    #{issue_id} [{tracker}] {subject} → Projeto{glpi}"
 REPORT_TREE_TASK = "    #{issue_id} [{tracker}] {subject} → Tarefa{glpi}"
 REPORT_TREE_FATURAMENTO = (
-    "    #{issue_id} [{tracker}] {subject} → linha de Faturamento (container 25)"
+    "    #{issue_id} [{tracker}] {subject} → Tarefa tipo Faturamento "
+    "+ container 26"
 )
 REPORT_TREE_SKIPPED = "    #{issue_id} [{tracker}] {subject} → IGNORADO ({reason})"
 
@@ -228,16 +248,20 @@ REPORT_SKIPPED_LINE = 'IGNORADO subtarefa {tracker} {issue_id} "{subject}" — {
 REPORT_SECTION_RELATIONS = "RELAÇÕES DO REDMINE NÃO MIGRADAS"
 REPORT_SECTION_RELATIONS_INTRO = (
     "  Relações horizontais (relates) não fazem parte da hierarquia e nunca "
-    "viram tarefas.\n  Somente parceiros do tracker 15 (Faturamento) geram "
-    "linhas no container 25."
+    "viram tarefas comuns.\n  Somente parceiros do tracker 15 (Faturamento) "
+    "geram uma tarefa tipo Faturamento com linha no container 26."
 )
 REPORT_RELATION_LINE = (
     '  - #{issue_id} [{tracker}] "{subject}" — relação {relation_type}, '
     "não migrada"
 )
 
-REPORT_SECTION_FATURAMENTO = "FATURAMENTO (container 25)"
+REPORT_SECTION_FATURAMENTO = (
+    "FATURAMENTO (tarefa tipo Faturamento + container 26)"
+)
 REPORT_FATURAMENTO_ITEM = '  Faturamento RDM {issue_id} — "{subject}"'
+REPORT_FATURAMENTO_TASK_PAYLOAD = "Tarefa (glpi_projecttasks):"
+REPORT_FATURAMENTO_ROW_PAYLOAD = "Linha do container 26:"
 
 REPORT_SECTION_TASKS = "TAREFAS (glpi_projecttasks)"
 REPORT_TASK_ITEM = '  Tarefa RDM {issue_id} — "{subject}"'
@@ -273,12 +297,17 @@ APPLY_HEADER = "== Gravando no GLPI =="
 APPLY_PROJECT_CREATED = "[OK] Projeto criado: GLPI {glpi_id} (RDM {issue_id})."
 APPLY_CONTAINER15_WRITTEN = "[OK] Campos adicionais gravados (container 15, linha {row_id})."
 APPLY_TASK_CREATED = "[OK] Tarefa criada: GLPI {glpi_id} (RDM {issue_id})."
+APPLY_FATURAMENTO_TASK_CREATED = (
+    "[OK] Tarefa de Faturamento criada: GLPI {glpi_id} (RDM {issue_id})."
+)
 APPLY_FATURAMENTO_CREATED = (
-    "[OK] Linha de Faturamento criada: GLPI {row_id} (RDM {issue_id})."
+    "[OK] Linha de Faturamento criada: container 26 {row_id} na tarefa "
+    "{task_id} (RDM {issue_id})."
 )
 APPLY_FATURAMENTO_DEGRADED = (
-    "[AVISO] O GLPI recusou linhas adicionais de Faturamento neste projeto. "
-    "A primeira foi gravada; as demais estão no relatório com todos os valores.\n"
+    "[AVISO] A tarefa de Faturamento RDM {issue_id} foi criada (GLPI "
+    "{task_id}), mas o GLPI recusou a linha do container 26. Os valores estão "
+    "no relatório e podem ser preenchidos à mão na aba Faturamento.\n"
     "  Detalhe: {detail}"
 )
 APPLY_STEP_FAILED = "[FALHA] {step}: {detail}"
@@ -351,7 +380,12 @@ UI_CARD_IGNORED = "Campos ignorados"
 UI_CARD_UNRESOLVED = "Não resolvidos"
 
 UI_WARN_UNRESOLVED = "{count} referência(s) não resolvida(s)"
-UI_WARN_MANDATORY = "{count} campo(s) obrigatório(s) sem dados"
+# "critical" in the UI: these refuse the POST /Project outright.
+UI_WARN_MANDATORY = "{count} campo(s) obrigatório(s) sem dados — bloqueia a gravação"
+# "warning": the container-26 row is written anyway, just incomplete.
+UI_WARN_MANDATORY_FATURAMENTO = (
+    "{count} campo(s) obrigatório(s) do Faturamento sem dados"
+)
 UI_WARN_SKIPPED = "{count} subtarefa(s) ignorada(s)"
 UI_WARN_FAILURES = "{count} filho(s) ilegível(is) no Redmine"
 UI_WARN_CYCLES = "{count} ciclo(s) na árvore"

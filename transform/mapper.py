@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from config.settings import TRACKER_TO_PROJECTTASKTYPE
+
 DATE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 
 # yesno transform (spec 6.2). Redmine sends text, GLPI expects 0/1.
@@ -190,16 +192,28 @@ class Mapper:
         self._tag_origin(result, issue)
         return result
 
-    def map_faturamento(self, issue: dict) -> MappingResult:
-        """Container-25 columns for one tracker-15 issue (spec 6.5)."""
-        result = self.map_section(issue, "container25", sweep=False)
+    def map_faturamento(self, issue: dict) -> tuple[MappingResult, MappingResult]:
+        """One tracker-15 issue -> a ProjectTask plus its container-26 row.
+
+        CHANGED 2026-08-06 (spec 6.5). A Faturamento used to be a single
+        container-25 row on the Project. GLPI now models it as a ProjectTask of
+        type Faturamento carrying a container-26 row, so this returns the same
+        (core, container) pair map_project already returns - the shapes stay
+        parallel on purpose.
+
+        The sweep runs once, on the container pass, because both sections draw
+        from the same pool of custom fields.
+        """
+        core = self.map_section(issue, "task_core", sweep=False)
+        container = self.map_section(issue, "container26", sweep=False)
+
         cf_index = custom_field_index(issue)
-        consumed = self._consumed_names(("container25",))
-        # scope 'faturamento' in mapping.yml declares Cliente,
-        # Responsável Cliente NF and Conformidade1.
-        self._sweep_unmapped("faturamento", cf_index, consumed, result)
-        self._tag_origin(result, issue)
-        return result
+        consumed = self._consumed_names(("task_core", "container26"))
+        # scope 'faturamento' in mapping.yml declares Cliente and Conformidade1.
+        self._sweep_unmapped("faturamento", cf_index, consumed, container)
+        self._tag_origin(core, issue)
+        self._tag_origin(container, issue)
+        return core, container
 
     def map_project(self, issue: dict) -> tuple[MappingResult, MappingResult]:
         """Core project columns and container-15 columns.
@@ -342,6 +356,24 @@ class Mapper:
                 return None, Outcome.UNRESOLVED, detail
             return resolved, Outcome.WRITTEN, ""
 
+        if transform == "tasktype":
+            # Redmine tracker id -> glpi_projecttasktypes. Only the trackers in
+            # TRACKER_TO_PROJECTTASKTYPE get a type; 14 and 42 deliberately get
+            # none, so NO_COUNTERPART (not UNRESOLVED) is the honest outcome -
+            # nothing failed, there simply is no type for a plain task.
+            try:
+                tracker_id = int(float(raw))
+            except (TypeError, ValueError):
+                return None, Outcome.UNRESOLVED, f"tracker inválido: {raw!r}"
+            resolved = TRACKER_TO_PROJECTTASKTYPE.get(tracker_id)
+            if resolved is None:
+                return (
+                    None,
+                    Outcome.NO_COUNTERPART,
+                    f"tracker {tracker_id} não possui tipo de tarefa no GLPI",
+                )
+            return resolved, Outcome.WRITTEN, ""
+
         if transform == "dropdown":
             itemtype = entry["itemtype"]
             resolved = self._dropdowns.resolve(itemtype, label, raw)
@@ -395,9 +427,16 @@ class Mapper:
     def never_write_records(self) -> list[FieldRecord]:
         """Declared columns that are intentionally left untouched (spec 6.4)."""
         detail_by_reason = {
-            "inactive": "coluna inativa no GLPI (is_active: 0) — gravar nela é erro",
+            # Verified in plugin source 1.24.3 (2026-08-06): a write to an
+            # inactive column is NOT rejected, it just becomes invisible in the
+            # GLPI form. The wording used to claim it was an error.
+            "inactive": "coluna inativa no GLPI (is_active: 0) — o valor não apareceria no formulário",
             "manual": "definido manualmente no GLPI após a migração",
             "skipped": "prioridade é ignorada em toda a migração",
+            "redundant": (
+                "mesma informação já gravada no campo Estado da tarefa "
+                "(projectstates_id)"
+            ),
         }
         records = []
         for item in self._mapping.get("never_write") or []:
