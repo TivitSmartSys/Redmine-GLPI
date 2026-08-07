@@ -107,6 +107,19 @@ def run_preflight(
         return False
     print(messages.PREFLIGHT_FIELDS_RIGHTS_OK)
 
+    # Step 2b - the read above only proves READ access to the plugin. Writing a
+    # container row on a ProjectTask needs UPDATE on `projecttask` as well, and
+    # on 2026-08-07 the profile had it for `project` but not for `projecttask`,
+    # so every container-26 row was refused after the tasks had been created.
+    # Deliberately a warning, not a stop: only the Faturamento tab is lost, the
+    # tasks are created and apply already degrades gracefully. None means the
+    # right could not be read - stay silent rather than warn on a guess.
+    projecttask_right = glpi.can_write_projecttask_containers()
+    if projecttask_right is False:
+        print(messages.PREFLIGHT_PROJECTTASK_RIGHT_MISSING)
+    elif projecttask_right:
+        print(messages.PREFLIGHT_PROJECTTASK_RIGHT_OK)
+
     # Step 3 - preload and cache every dropdown dictionary.
     itemtypes = dropdown_itemtypes(mapping)
     print(messages.PREFLIGHT_DROPDOWNS_LOADING.format(count=len(itemtypes)))

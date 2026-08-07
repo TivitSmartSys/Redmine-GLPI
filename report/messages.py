@@ -85,6 +85,23 @@ PREFLIGHT_FIELDS_CHECK_FAILED = (
     "  Detalhe: {detail}"
 )
 
+PREFLIGHT_PROJECTTASK_RIGHT_OK = (
+    "[OK] Permissão de gravação nas tarefas de projeto confirmada."
+)
+
+# AVISO, não FALHA: sem esta permissão apenas a linha do container 26 é
+# recusada. A tarefa de Faturamento é criada normalmente e a migração continua
+# — um projeto sem Faturamento não é afetado.
+PREFLIGHT_PROJECTTASK_RIGHT_MISSING = (
+    "[AVISO] O perfil da API não tem permissão de ALTERAR em Tarefas de projeto.\n"
+    "  As linhas do container 26 (aba Faturamento) serão RECUSADAS pelo GLPI: as "
+    "tarefas de Faturamento\n"
+    "  são criadas, mas a aba fica vazia e os valores só existem neste relatório.\n"
+    "  Conceda a permissão em: Administração → Perfis → [perfil da API] → "
+    "Tarefas de projeto → Alterar.\n"
+    "  Projetos sem Faturamento não são afetados — a migração continua."
+)
+
 PREFLIGHT_DROPDOWNS_LOADING = "[..] Carregando os dicionários de listas ({count} no total)…"
 
 PREFLIGHT_DROPDOWN_OK = "     [OK] {itemtype}: {count} valor(es)."

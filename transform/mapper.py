@@ -155,6 +155,11 @@ class Mapper:
         Project only. Hard-coding a list would therefore lose data the moment a
         new tracker appears, so we iterate over issue.custom_fields generically.
 
+        Tracker 41 (Compras) entering scope on 2026-08-06 is the case in point:
+        its seven fields - Cliente, Data Finalização, Data Cotação, Solicitação
+        Interna, Código Solicitação Interna, Data Aprovação FP&A, Pedido - reach
+        the comment dump through this loop, with no entry added anywhere.
+
         Closed decision (variant b, "comment"): every non-empty field is both
         reported AND dumped into the task's comment under a mandatory header
         that distinguishes migrated data from text typed by hand in GLPI.

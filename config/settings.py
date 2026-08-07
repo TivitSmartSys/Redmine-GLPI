@@ -47,6 +47,33 @@ ITEMTYPE_FATURAMENTO = "PluginFieldsProjecttaskfaturamento"
 CONTAINER_ID_TASK_ADDITIONAL_FIELDS = 16
 
 # ---------------------------------------------------------------------------
+# GLPI profile rights - the bit values are GLPI core constants (inc/define.php:
+# READ 1, UPDATE 2, CREATE 4, DELETE 8, PURGE 16).
+#
+# Why we look at `projecttask` specifically. Diagnosed live on 2026-08-07 after
+# POST /PluginFieldsProjecttaskfaturamento answered
+#   ['ERROR_GLPI_ADD', 'Você não tem permissão para executar essa ação.']
+# on RDM 18547 / task 14095. The Fields plugin checks the HOST itemtype's plain
+# UPDATE bit before inserting a container row, so a "tab" container attached to
+# a ProjectTask needs UPDATE on `projecttask`. The API profile (Super-Admin,
+# id 4) had project=1151 but projecttask=1145 - the two missing bits being
+# exactly UPDATE(2) and CREATE(4).
+#
+# Isolated by elimination, all four verified against the live instance:
+#   - a minimal payload with no data column at all is refused  -> not the values
+#   - the same payload plus entities_id=75 is refused           -> not the entity
+#   - the same shape on container 25 (host Project) succeeds    -> not the code
+#   - PUT /ProjectTask/<id> succeeds                            -> GLPI honours
+#     "update my own tasks" there, while the plugin wants the plain UPDATE bit,
+#     which is why the symptoms look contradictory
+#
+# The consequence is limited: only the container-26 row is refused, the task
+# itself is created and apply degrades with a warning. Hence preflight WARNS
+# rather than aborting - a project with no Faturamento is unaffected.
+GLPI_RIGHT_UPDATE = 2
+GLPI_RIGHTNAME_PROJECTTASK = "projecttask"
+
+# ---------------------------------------------------------------------------
 # Tracker scope (spec section 1a + overriding rules from PROMPT_dla_Claude_Code)
 # ---------------------------------------------------------------------------
 
@@ -58,6 +85,9 @@ TRACKER_FATURAMENTO = 15
 # Redmine tracker 18 "Atividades" - migrated as a ProjectTask of type Atividade.
 TRACKER_ATIVIDADES = 18
 
+# Redmine tracker 41 "Compras" - migrated as a ProjectTask of type Compras.
+TRACKER_COMPRAS = 41
+
 # Trackers allowed to become a GLPI ProjectTask when found as a descendant.
 # Everything else falls under the "child out of scope -> skip + report" rule
 # (spec section 1a, decision variant c, closed in v1.5).
@@ -65,27 +95,40 @@ TRACKER_ATIVIDADES = 18
 # Deliberately absent:
 #   39 Projeto CEMIG    - entirely out of scope
 #   40 Subtarefa Cemig  - child of CEMIG projects only, out of scope
-#   41 Compras          - out of scope as a separate entity
 #
 # 18 Atividades moved OUT of phase two on 2026-08-06: GLPI now has a
 # ProjectTaskType "Atividade", so the 1259 issues become typed tasks.
-IN_SCOPE_TASK_TRACKERS = frozenset({14, 42, 18})
+#
+# 41 Compras joined on 2026-08-06 for the same reason - a ProjectTaskType
+# "Compras" (id 5) was created in GLPI. Measured live the same day: 72 issues,
+# of which 56 hang directly off a tracker-14 (53) or tracker-42 (3) root and are
+# therefore reachable by the tree walk. No Compras sits under an Atividade or
+# under a skipped node, and none has children of its own, so the change adds no
+# cascade. The remaining 16 have no parent at all: nothing reaches them and they
+# are knowingly left unmigrated - Compras is a task tracker, never a root (its
+# seven custom fields do not fit container 15 and the five mandatory columns
+# would be empty, which GLPI would reject).
+IN_SCOPE_TASK_TRACKERS = frozenset({14, 42, 18, 41})
 
 # Trackers accepted as a migration root. Atividades is a task-only tracker -
 # it is never a root, only a descendant.
 IN_SCOPE_ROOT_TRACKERS = frozenset({14, 42})
 
 # ---------------------------------------------------------------------------
-# glpi_projecttasktypes - verified live 2026-08-06.
+# glpi_projecttasktypes - verified live 2026-08-06, the full table being
+#   1 Deslocamento, 2 Manutenção Preventiva, 3 Faturamento, 4 Atividade,
+#   5 Compras
 # Only trackers listed here get a type; 14 and 42 deliberately get none, so an
 # untyped task reads as intentional rather than as a failed lookup.
 # ---------------------------------------------------------------------------
 PROJECTTASKTYPE_FATURAMENTO = 3
 PROJECTTASKTYPE_ATIVIDADE = 4
+PROJECTTASKTYPE_COMPRAS = 5
 
 TRACKER_TO_PROJECTTASKTYPE = {
     TRACKER_FATURAMENTO: PROJECTTASKTYPE_FATURAMENTO,
     TRACKER_ATIVIDADES: PROJECTTASKTYPE_ATIVIDADE,
+    TRACKER_COMPRAS: PROJECTTASKTYPE_COMPRAS,
 }
 
 # ---------------------------------------------------------------------------
@@ -102,39 +145,32 @@ MANDATORY_CONTAINER15_COLUMNS = (
 )
 
 # ---------------------------------------------------------------------------
-# Container 26 fields flagged mandatory in GLPI (verified live 2026-08-06).
+# Container 26 fields flagged mandatory in GLPI - EMPTY since 2026-08-07.
 #
-# These behave DIFFERENTLY from the container-15 ones above, and the report must
-# not conflate the two. Container 15 is type "dom": its values travel inside the
-# POST /Project input, where the plugin's pre_item_add hook validates them, so a
-# missing value REJECTS the project (that is the ERROR_GLPI_ADD failure of
-# 2026-08-04). Container 26 is type "tab": we write its row straight to the
-# container itemtype over REST, a path that never reaches validateValues() -
-# verified in plugin source 1.24.3, where the generated row class extends
-# PluginFieldsAbstractContainerInstance and neither overrides prepareInputForAdd
-# nor calls validateValues(). A missing value here leaves the row incomplete;
-# it does not refuse the write. GLPI's own UI will refuse to save the tab by
-# hand until someone fills it.
-# ---------------------------------------------------------------------------
-# NOTE the two spellings. A Fields-plugin column keeps the field's own name for
-# every type EXCEPT dropdown, where the column is
+# It used to hold five columns, one of them
+# plugin_fields_statusfaturamentofielddropdowns_id, kept in the tuple ON PURPOSE
+# so report section 5 would keep showing the open request to unflag field 225.
+# That request has been granted: a sweep of GET /PluginFieldsField on 2026-08-07
+# found mandatory=0 on EVERY field of container 26 - and of container 15 too.
+# The tuple is emptied rather than deleted because both reporter.py and
+# web/summary.py iterate it; an empty tuple simply stops producing the block.
+#
+# Container 26 flags never refused a write anyway (it is type "tab": the row is
+# written straight to the container itemtype, a path that never reaches the
+# plugin's validateValues() - verified in plugin source 1.24.3, where the
+# generated row class extends PluginFieldsAbstractContainerInstance and neither
+# overrides prepareInputForAdd nor calls validateValues). They only drove the
+# report. Container 15 is the one where a mandatory flag REJECTS the project,
+# which is why MANDATORY_CONTAINER15_COLUMNS above is left populated even though
+# the live flags are currently 0 - it is a cheap guard against an admin
+# re-flagging them, and the instance has flipped these before.
+#
+# NOTE for whoever repopulates this: a Fields-plugin column keeps the field's
+# own name for every type EXCEPT dropdown, where the column is
 # `plugin_fields_<name>dropdowns_id` - confirmed 2026-08-06 against the live
 # container-25 row, which stores `plugin_fields_prioridadefielddropdowns_id`
-# next to plain `ttulofield`. The GLPI field is named `statusfaturamentofield`;
-# its COLUMN is the long form below.
-#
-# plugin_fields_statusfaturamentofielddropdowns_id is listed here but
-# deliberately never written (see never_write in mapping.yml): the task's core
-# Estado already carries that status. It stays in this tuple ON PURPOSE so
-# report section 5 keeps showing the open GLPI-side request to unflag it.
-# Remove the entry once an admin has done so.
-MANDATORY_CONTAINER26_COLUMNS = (
-    "ttulofieldtwo",
-    "plugin_fields_statusfaturamentofielddropdowns_id",
-    "valortotaldanffieldtwo",
-    "responsvelclientenffield",
-    "plugin_fields_prioridadefielddropdowns_id",
-)
+# next to plain `ttulofield`.
+MANDATORY_CONTAINER26_COLUMNS: tuple[str, ...] = ()
 
 # ---------------------------------------------------------------------------
 # entities_id - spec 11.3, RESOLVED by observation on 2026-07-30.

@@ -17,6 +17,7 @@ from typing import Any
 import requests
 
 from clients.errors import (
+    ApiError,
     GlpiError,
     GlpiItemtypeNotFoundError,
     GlpiRightMissingError,
@@ -25,6 +26,8 @@ from config.settings import (
     CONTAINER_ID_ADDITIONAL_FIELDS,
     CONTAINER_ID_FATURAMENTO,
     DROPDOWN_FETCH_RANGE,
+    GLPI_RIGHT_UPDATE,
+    GLPI_RIGHTNAME_PROJECTTASK,
     HTTP_TIMEOUT_SECONDS,
     ITEMTYPE_ADDITIONAL_FIELDS,
     ITEMTYPE_FATURAMENTO,
@@ -171,6 +174,36 @@ class GlpiClient:
         """Spec 9.0 step 2. Raises GlpiRightMissingError when the profile lacks
         read/write access to the Fields plugin."""
         self._request("GET", "/PluginFieldsField", params={"range": "0-0"})
+
+    def can_write_projecttask_containers(self) -> bool | None:
+        """Whether the API profile may insert a container row on a ProjectTask.
+
+        `GET /PluginFieldsField` above only proves READ access, which is why the
+        container-26 failure of 2026-08-07 slipped past preflight: the plugin
+        checks the HOST itemtype's plain UPDATE bit when inserting the row, and
+        the profile had it for `project` but not for `projecttask`. See the
+        GLPI_RIGHT_UPDATE block in config/settings.py for the full diagnosis.
+
+        Read-only - the right cannot be probed with a real write during a
+        dry-run. Returns None when the answer is unknown (endpoint unavailable,
+        key absent, non-numeric value): an unknown is never reported as a
+        missing right, in keeping with resolve/ returning None on a miss rather
+        than inventing an answer.
+        """
+        try:
+            payload = self._request("GET", "/getActiveProfile")
+        except ApiError:
+            return None
+
+        profile = payload.get("active_profile", payload) if isinstance(payload, dict) else None
+        if not isinstance(profile, dict):
+            return None
+
+        try:
+            right = int(profile[GLPI_RIGHTNAME_PROJECTTASK])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return bool(right & GLPI_RIGHT_UPDATE)
 
     # -- dropdown dictionaries (spec 6.3) ----------------------------------
 

@@ -10,6 +10,9 @@ Revised 2026-08-06: a Faturamento used to be a container-25 row on the Project,
 which is why it is still classified separately from a plain TASK. Tracker 18
 (Atividades) joined IN_SCOPE_TASK_TRACKERS in the same change and needs no
 branch of its own - it is an ordinary task that happens to get a task type.
+Tracker 41 (Compras) joined the same way later that day, once GLPI gained a
+ProjectTaskType "Compras": membership in IN_SCOPE_TASK_TRACKERS is the whole
+change, _classify below stays untouched.
 
 Scope rule (closed decision, variant c): a child whose tracker is out of scope
 is NOT created in GLPI; it goes to the report instead. Section 3 and Appendix D

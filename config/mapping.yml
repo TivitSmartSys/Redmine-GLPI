@@ -259,12 +259,12 @@ container15:
 # written (check row id 2 / RDM 20389 by hand). The name is correct here.
 # ---------------------------------------------------------------------------
 container26:
-  # mandatory in GLPI - see MANDATORY_CONTAINER26_COLUMNS in config/settings.py.
-  # Unlike the container-15 ones these do not refuse the write; an empty value
-  # leaves the row incomplete and is reported.
+  # The `mandatory: true` flags that used to sit on four entries here were
+  # removed on 2026-08-07: a sweep of GET /PluginFieldsField found mandatory=0
+  # on every field of container 26. See MANDATORY_CONTAINER26_COLUMNS in
+  # config/settings.py, now empty.
   - column: ttulofieldtwo
     transform: text
-    mandatory: true
     sources: [{from: attribute, name: subject}]
 
   - column: descriofieldtwo
@@ -280,25 +280,24 @@ container26:
   # normalising either one would desync project and invoice values.
   - column: valortotaldanffieldtwo
     transform: text
-    mandatory: true
     sources: [{from: custom_field, name: "Valor Total da NF"}]
 
   # New in container 26. Populated in all 50 tracker-15 issues sampled on
   # 2026-08-06, which is why it moved out of report_only/no_counterpart.
   - column: responsvelclientenffield
     transform: text
-    mandatory: true
     sources: [{from: custom_field, name: "Responsável Cliente NF"}]
 
-  # Priority is dropped globally for projects and tasks, but container 26 flags
-  # it mandatory, so this one instance is migrated. Source is the CORE priority
-  # attribute - tracker 15 has no "Prioridade" custom field. Verified live
-  # 2026-08-06: the dictionary holds Alta / Crítica / Urgente / Normal / Baixa,
-  # and all 50 sampled issues carry "Normal", so it resolves.
+  # Priority is dropped globally for projects and tasks; this one instance is
+  # migrated because container 26 flagged it mandatory. The flag went away on
+  # 2026-08-07, the mapping stays - the value resolves cleanly and dropping it
+  # now would lose data for no reason. Source is the CORE priority attribute -
+  # tracker 15 has no "Prioridade" custom field. Verified live 2026-08-06: the
+  # dictionary holds Alta / Crítica / Urgente / Normal / Baixa, and all 50
+  # sampled issues carry "Normal", so it resolves.
   - column: plugin_fields_prioridadefielddropdowns_id
     transform: dropdown
     itemtype: PluginFieldsPrioridadefielddropdown
-    mandatory: true
     sources: [{from: attribute, name: priority.name}]
 
   - column: npedidoclientefieldtwo
@@ -370,9 +369,9 @@ task_core:
 
   # glpi_projecttasktypes, new 2026-08-06. The `tasktype` transform maps the
   # Redmine tracker id through TRACKER_TO_PROJECTTASKTYPE in config/settings.py:
-  # 15 -> 3 Faturamento, 18 -> 4 Atividade. Trackers 14 and 42 have no entry and
-  # are reported as NO_COUNTERPART, so an untyped task reads as intentional
-  # rather than as a lookup that failed.
+  # 15 -> 3 Faturamento, 18 -> 4 Atividade, 41 -> 5 Compras. Trackers 14 and 42
+  # have no entry and are reported as NO_COUNTERPART, so an untyped task reads
+  # as intentional rather than as a lookup that failed.
   - column: projecttasktypes_id
     transform: tasktype
     sources: [{from: attribute, name: tracker.id}]
@@ -407,11 +406,11 @@ never_write:
   # added by hand on 2026-08-06 precisely for the Faturamento statuses. Writing
   # both would duplicate the same five values across two dictionaries.
   #
-  # PENDING GLPI-SIDE ACTION: field 225 is still flagged mandatory=1, and its
-  # dictionary PluginFieldsStatusfaturamentofielddropdown is empty. Until an
-  # admin unflags it, report section 5 keeps listing it - deliberately, so the
-  # open request stays visible. Drop it from MANDATORY_CONTAINER26_COLUMNS in
-  # config/settings.py once that is done.
+  # SETTLED 2026-08-07: field 225 is no longer flagged mandatory (nor is any
+  # other field of container 26), so it left MANDATORY_CONTAINER26_COLUMNS and
+  # report section 5 no longer lists it. It stays here in never_write for the
+  # original reason, which the unflagging does not change: the task's core
+  # Estado already carries the same status.
   - column: plugin_fields_statusfaturamentofielddropdowns_id
     reason: redundant
   # Deliberate product decisions

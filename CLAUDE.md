@@ -149,19 +149,27 @@ migrated data (field names, values) is copied verbatim, never translated.
 ## Scope (closed decisions)
 
 In scope as migration roots: trackers **14** (Projeto) and **42** (Projeto
-Hydro). As tasks: 14, 42 and **18** (Atividades). Tracker **15** (Faturamento)
-becomes a ProjectTask of type *Faturamento* on the **root** project — never
-nested under its Redmine parent — carrying a container-26 row; it is the only
-tracker that drives branching logic. Out of scope: **39** CEMIG and **40**
-Subtarefa Cemig (entirely), **41** Compras, and attachments (phase two). An
+Hydro). As tasks: 14, 42, **18** (Atividades) and **41** (Compras). Tracker
+**15** (Faturamento) becomes a ProjectTask of type *Faturamento* on the **root**
+project — never nested under its Redmine parent — carrying a container-26 row;
+it is the only tracker that drives branching logic. Out of scope: **39** CEMIG
+and **40** Subtarefa Cemig (entirely), and attachments (phase two). An
 out-of-scope child is not created in GLPI; it gets an explicit report line, and
 its descendants are skipped too. Scope lives in `config/settings.py`
 (`IN_SCOPE_TASK_TRACKERS`, `IN_SCOPE_ROOT_TRACKERS`, `TRACKER_FATURAMENTO`,
-`TRACKER_ATIVIDADES`, `TRACKER_TO_PROJECTTASKTYPE`).
+`TRACKER_ATIVIDADES`, `TRACKER_COMPRAS`, `TRACKER_TO_PROJECTTASKTYPE`).
 
 Task types come from `TRACKER_TO_PROJECTTASKTYPE` (15 → 3 Faturamento, 18 → 4
-Atividade). Trackers 14 and 42 deliberately have no entry, so an untyped task is
-reported as `NO_COUNTERPART` rather than as a lookup that failed.
+Atividade, 41 → 5 Compras). Trackers 14 and 42 deliberately have no entry, so an
+untyped task is reported as `NO_COUNTERPART` rather than as a lookup that failed.
+
+Compras is a task tracker only, never a root. Of its 72 issues, 56 hang directly
+off a tracker-14 or tracker-42 root and are migrated; the other **16 have no
+parent at all** and are knowingly left unmigrated — nothing reaches them. Their
+seven custom fields (`Cliente`, `Data Finalização`, `Data Cotação`, `Solicitação
+Interna`, `Código Solicitação Interna`, `Data Aprovação FP&A`, `Pedido`) have no
+column in `glpi_projecttasks` and go to the spec-9.4 comment dump, exactly as
+Atividades do. All four statuses Compras uses were already in `status_map.yml`.
 
 Container **16** (`camposadicionaistarefasdeprojeto`, type "dom" on ProjectTask)
 is active but deliberately **not written**: three of its five fields are
@@ -199,6 +207,31 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
 - `glpi_projectstates` contains duplicates: `Novo` at ids 1 and 12, and
   `NF solicitada` (14) next to `NF Solicitada` (17). The map targets 1 and 17;
   ids 12 and 14 should be merged away on the GLPI side.
+- **Writing a container row needs UPDATE on the host itemtype's right, and a
+  successful `GET /PluginFieldsField` does not prove it.** Diagnosed 2026-08-07:
+  container-26 rows were refused with `ERROR_GLPI_ADD "Você não tem permissão
+  para executar essa ação."` because the profile had `project` = 1151 but
+  `projecttask` = 1145 — missing exactly UPDATE(2) and CREATE(4). Isolated by
+  elimination: a payload with no data column at all is still refused (not the
+  values), adding `entities_id: 75` changes nothing (not the entity), the same
+  shape on container 25 with a `Project` host succeeds (not the code), and
+  `PUT /ProjectTask/<id>` succeeds because GLPI honours "update my own tasks"
+  there while the plugin wants the plain UPDATE bit. That last one is why the
+  symptoms look self-contradictory. **RESOLVED the same day**: `projecttask` was
+  raised to 1151 and a container-26 row now writes with its values.
+  `can_write_projecttask_containers()` reads the bit from `GET /getActiveProfile`
+  and preflight **warns** — never aborts, since only the Faturamento tab is lost.
+- **Profile rights are not columns on `glpi_profiles`.** `GET /Profile/4` shows
+  `projecttask` as a key, but `PUT /Profile/4` with `{"projecttask": 1151}`
+  returns `{"4": true}` and changes **nothing** — a silent no-op that reads as
+  success. Rights live in `glpi_profilerights`, one row per right: find it with
+  `GET /Profile/<id>/ProfileRight` and `PUT /ProfileRight/<row id>` with
+  `{"rights": <mask>}`. That is how the 2026-08-07 grant was applied (row 194).
+- **A permission error can mean the parent is gone.** `POST /ProjectTask` with a
+  `projects_id` that no longer exists fails with the same "Você não tem
+  permissão" text as a real rights problem, and so does a container row whose
+  host item was deleted. Confirm the parent still exists before blaming rights —
+  on 2026-08-07 a deleted project sent this diagnosis down a false trail.
 
 ## Open points before production (spec 11)
 
@@ -207,19 +240,46 @@ Five container-15 columns are flagged mandatory
 dry-run report surfaces them. Tracker 14 covers all five; tracker 39 does not —
 unresolved, and one reason 39 stays out of scope.
 
-Container 26 has five mandatory columns too
-(`MANDATORY_CONTAINER26_COLUMNS`). Four are mapped. The fifth,
-`plugin_fields_statusfaturamentofielddropdowns_id` ("Status Faturamento"), is
-deliberately **not** written: the only sensible source is the core Redmine
-status, and that already reaches the task's own **Estado** column
-(`projectstates_id`) through `status_map.yml`. Filling both would mean keeping
-the same five values in two dictionaries forever.
+`MANDATORY_CONTAINER26_COLUMNS` is **empty since 2026-08-07**: a sweep of
+`GET /PluginFieldsField` found `mandatory: 0` on every field of container 26 —
+including field 225 ("Status Faturamento"), whose unflagging was the standing
+GLPI-side request. Report section 5 no longer lists it. Field 225 stays in
+`never_write` for the reason that has not changed: the task's core **Estado**
+already carries the same status.
 
-**Open GLPI-side request:** field 225 is still `mandatory: 1` and its dictionary
-`PluginFieldsStatusfaturamentofielddropdown` is empty. Ask an admin to unflag
-it, then drop the column from `MANDATORY_CONTAINER26_COLUMNS`. Until then report
-section 5 lists it on every Faturamento — on purpose, so the request stays
-visible. It does not block the write (see the write-order section).
+The same sweep found container 15's five columns at `mandatory: 0` as well, yet
+`MANDATORY_CONTAINER15_COLUMNS` is deliberately left populated — a container-15
+flag *refuses the project*, the flags have flipped before, and the tuple only
+costs a report line.
+
+### Faturamento stays on container 26 — CLOSED, confirmed with the manager 2026-08-07
+
+A Faturamento is a ProjectTask of type *Faturamento* whose invoice data lives on
+its **Faturamento tab** (container 26). This is a product decision, not a
+technical one; do not re-open it on technical grounds.
+
+**Therefore the `projecttask` UPDATE right is a hard prerequisite, not a
+workaround.** It was granted on 2026-08-07 (profile 4 Super-Admin, `projecttask`
+1145 → 1151) and verified end to end: a container-26 row created on a ProjectTask
+with its values stored. Should it ever be revoked, every Faturamento is created
+as an empty shell — name, Estado and Tipo, with none of the invoice values.
+Preflight warns (`PREFLIGHT_PROJECTTASK_RIGHT_MISSING`); it does not abort,
+because a project with no Faturamento is unaffected.
+
+**Rejected alternative, kept because the evidence is expensive to re-derive.**
+Moving the invoice fields into container 16 (the "dom" container on ProjectTask)
+*would* sidestep the missing right: a "dom" container's values ride inside the
+`POST /ProjectTask` input and the plugin writes the row from GLPI's own add
+hook, which never reaches the REST rights check. Proven live on 2026-08-07 —
+`POST /ProjectTask` carrying `plugin_fields_prioridadefielddropdowns_id: 7`
+produced container-16 row 5883 with that value, in entity 75, while the profile
+still lacked the right; the throwaway task was purged afterwards. It was dropped
+because the manager confirmed the tab is what the business wants, and because it
+carried two real costs: there is **no repair path** (`PUT` on a ProjectTask
+container row is refused too, so everything must land in one `POST`, with no
+equivalent of `write_additional_fields_row`'s update branch), and container 16
+is **shared by every ProjectTask**, so one field flagged mandatory would break
+`POST /ProjectTask` for Atividades and Compras as well.
 
 Do not confuse the two fields. **Estado** on a ProjectTask is core GLPI
 (`glpi_projectstates`); **Status Faturamento** is a plugin dropdown shown on the
