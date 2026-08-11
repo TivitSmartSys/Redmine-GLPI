@@ -182,6 +182,10 @@ CLI_HELP_SKIP_ATTACHMENTS = (
     "Não migra os anexos (Documentos). Eles continuam listados no relatório, "
     "marcados como ignorados."
 )
+CLI_HELP_SKIP_NOTES = (
+    "Não migra as notas (aba Notas do GLPI). Elas continuam listadas no "
+    "relatório, marcadas como ignoradas."
+)
 
 CLI_MODE_DRY_RUN = (
     "MODO SIMULAÇÃO (dry-run): nada será gravado no GLPI. "
@@ -207,6 +211,7 @@ REPORT_SECTION_5 = "5. CAMPOS OBRIGATÓRIOS DO GLPI SEM DADOS"
 REPORT_SECTION_6 = "6. COLUNAS NUNCA GRAVADAS (por decisão)"
 REPORT_SECTION_7 = "7. CONFERÊNCIA DE INTEGRIDADE"
 REPORT_SECTION_8 = "8. ANEXOS (Documentos do GLPI)"
+REPORT_SECTION_9 = "9. NOTAS (aba Notas do GLPI)"
 
 REPORT_PROJECT_LINE = 'Projeto GLPI: "{name}"'
 REPORT_ORIGIN_LINE = "  Origem: RDM {issue_id} (tracker {tracker_id} {tracker_name})"
@@ -350,6 +355,85 @@ REPORT_ATTACHMENT_FAIL = (
     "Isto é um defeito do migrador."
 )
 
+# ---------------------------------------------------------------------------
+# Section 9 - notes (Redmine journals -> GLPI Notepad)
+#
+# Parallel to section 8, never merged with it. Section 7 counts source FIELDS,
+# section 8 counts FILES and section 9 counts NOTES; each closes its own
+# arithmetic, and mixing any two would break the guarantee the report exists for.
+# ---------------------------------------------------------------------------
+REPORT_SECTION_9_INTRO = (
+    "  Cada nota de texto do Redmine vira uma linha na aba Notas do item "
+    "correspondente.\n  Entradas de histórico sem texto (mudança de status, de "
+    "campo) não geram nota e\n  aparecem apenas no total, agrupadas por item."
+)
+REPORT_NOTE_HOST = "  {label} — {count} nota(s) de texto"
+REPORT_NOTE_HOST_NO_TEXT = "  {label} — sem notas de texto"
+REPORT_NOTE_LINE = "    - nota {journal_id} · {author} · {created_on} {status}"
+REPORT_NOTE_TEXT = "        {text}"
+REPORT_NOTE_PRIVATE_TAG = "        [nota privada no Redmine]"
+REPORT_NOTE_FILES = "        arquivos desta nota: {names}"
+REPORT_NOTE_DETAIL = "        {detail}"
+REPORT_NOTE_HISTORY_ONLY = (
+    "    ({count} entrada(s) de histórico sem texto — nada a migrar)"
+)
+REPORT_NOTE_NONE = "  (nenhuma nota de texto encontrada no Redmine)"
+REPORT_NOTE_SKIPPED_HEADER = "  NÃO MIGRADAS:"
+
+# One label per NoteOutcome, in the report's own language.
+REPORT_NOTE_STATUS = {
+    "planned": "[a gravar]",
+    "written": "[gravada — Nota {glpi_id}]",
+    "dedup_glpi": "[já existe no GLPI — Nota {glpi_id}]",
+    "dedup_local": "[já registrada no mapa local]",
+    "no_host": "[NÃO MIGRADA]",
+    "history_only": "[sem texto]",
+    "skipped_by_flag": "[IGNORADA — --skip-notes]",
+    "failed_write": "[FALHA ao gravar no GLPI]",
+}
+
+REPORT_NOTE_HOST_MISSING = (
+    "o item de destino não foi criado no GLPI (veja os avisos acima)"
+)
+
+# Written into Notepad.content, so this text lands in the GLPI database and is
+# read by people working in GLPI - PT-BR like the rest of the user-facing text.
+# The dedup marker is prepended separately and always stays the first line.
+NOTE_ORIGIN = "Migrado do Redmine — issue {issue_id}, nota {journal_id}"
+NOTE_AUTHOR = "Autor: {author} · {created_on}"
+NOTE_PRIVATE = "[NOTA PRIVADA no Redmine]"
+NOTE_FILES = "Arquivos desta nota: {names}"
+
+REPORT_NOTE_TOTALS = "  Notas encontradas no Redmine  : {total}"
+REPORT_NOTE_PENDING = "    a gravar                    : {count}"
+REPORT_NOTE_DONE = "    já no GLPI                  : {count}"
+REPORT_NOTE_SKIPPED = "    não migradas                : {count}"
+REPORT_NOTE_FAILED = "    falhas                      : {count}"
+REPORT_NOTE_OK = (
+    "  [OK] {parts} = {total} — nenhuma nota foi descartada em silêncio."
+)
+REPORT_NOTE_FAIL = (
+    "  [ERRO] A soma das categorias ({parts}) não confere com o total ({total}). "
+    "Isto é um defeito do migrador."
+)
+
+# Truncated values. An unnumbered block, like the two below it: the value DID
+# reach GLPI, so it stays in the WRITTEN bucket of section 7 and does not get a
+# section number of its own. It still needs to be impossible to miss.
+REPORT_SECTION_TRUNCATED = "CAMPOS CORTADOS PARA CABER NO GLPI"
+REPORT_TRUNCATED_INTRO = (
+    "  As colunas de texto do plugin Fields são VARCHAR(255). Um valor maior faz\n"
+    "  o GLPI criar o projeto e recusar a linha do container logo depois — o que\n"
+    "  deixaria um projeto sem marcador rdmfield. Por isso o valor é cortado.\n"
+    "  O texto completo continua no Redmine."
+)
+REPORT_TRUNCATED_LINE = (
+    "  - {column} (origem: {source}) — {original} caracteres cortados para {limit}"
+)
+REPORT_TRUNCATED_KEPT = "      gravado: {value}"
+REPORT_TRUNCATED_LOST = "      perdido: {value}"
+REPORT_TRUNCATED_NONE = "  (nenhum)"
+
 REPORT_SECTION_FATURAMENTO = (
     "FATURAMENTO (tarefa tipo Faturamento + container 26)"
 )
@@ -423,6 +507,26 @@ APPLY_ATTACHMENT_FAILED = (
 APPLY_ATTACHMENT_NO_HOST = (
     "[AVISO] Anexo {attachment_id} de RDM {issue_id} ({filename}) não tem item "
     "de destino no GLPI; não foi migrado."
+)
+
+APPLY_NOTES_HEADER = "-- Notas: {count} nota(s) a gravar --"
+APPLY_NOTE_WRITTEN = (
+    "[OK] Nota {journal_id} de RDM {issue_id} gravada: Nota {glpi_id} "
+    "→ {itemtype} {items_id}."
+)
+APPLY_NOTE_DEDUP = (
+    "[--] Nota {journal_id} de RDM {issue_id} já existe no GLPI "
+    "(Nota {glpi_id}); nada foi gravado."
+)
+# Degradation, never an abort - the same rule the attachments follow: the
+# project, its tasks and its files are already written by the time this runs.
+APPLY_NOTE_FAILED = (
+    "[AVISO] Nota {journal_id} de RDM {issue_id} não foi migrada: {detail}\n"
+    "  O item no GLPI foi mantido; a nota continua no Redmine."
+)
+APPLY_NOTE_NO_HOST = (
+    "[AVISO] Nota {journal_id} de RDM {issue_id} não tem item de destino no "
+    "GLPI; não foi migrada."
 )
 
 APPLY_STEP_FAILED = "[FALHA] {step}: {detail}"

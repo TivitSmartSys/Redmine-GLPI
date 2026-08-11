@@ -20,6 +20,10 @@ WIDTH = 80
 RULE = "=" * WIDTH
 THIN = "-" * WIDTH
 
+# How much of a note's text the report previews on its line. Long enough to
+# recognise the note, short enough that a project with 14 of them stays readable.
+NOTE_EXCERPT_CHARS = 100
+
 
 @dataclass
 class PlannedTask:
@@ -84,6 +88,11 @@ class ProjectPlan:
     # bucket, and a file is not a field. Attachments close their own arithmetic
     # in section 8.
     attachments: list = field(default_factory=list)
+    # PlannedNote list from transform.notes. Out of all_records() for the same
+    # reason as `attachments`, and named `notes_planned` because `notes` below
+    # is already taken by the apply-time message log - a clash there would
+    # silently swallow the tail of the report.
+    notes_planned: list = field(default_factory=list)
     ignored_relations: list = field(default_factory=list)
     tree_failures: list = field(default_factory=list)
     tree_cycles: list = field(default_factory=list)
@@ -372,6 +381,35 @@ class Reporter:
             if column not in item.result.payload and column not in claimed
         ]
 
+    def _section_truncated(self) -> None:
+        """Values cut to fit a VARCHAR(255) plugin column.
+
+        Unnumbered on purpose. The value reached GLPI, so it belongs to the
+        WRITTEN bucket and section 7's total must not move; but a truncation is
+        the only place this migration knowingly loses source text, so it gets a
+        block of its own and shows exactly which characters were dropped.
+        """
+        records = [record for record in self._plan.all_records() if record.truncated]
+        self._section(messages.REPORT_SECTION_TRUNCATED)
+        self._add(messages.REPORT_TRUNCATED_INTRO)
+        if not records:
+            self._add(messages.REPORT_TRUNCATED_NONE)
+            return
+        for record in records:
+            self._add(
+                messages.REPORT_TRUNCATED_LINE.format(
+                    column=record.target_column,
+                    source=record.source_label,
+                    original=record.original_length,
+                    limit=len(record.written_value or ""),
+                )
+            )
+            kept = str(record.written_value or "")
+            self._add(messages.REPORT_TRUNCATED_KEPT.format(value=kept))
+            self._add(
+                messages.REPORT_TRUNCATED_LOST.format(value=record.raw_value[len(kept):])
+            )
+
     def _section_skipped_children(self) -> None:
         self._section(messages.REPORT_SECTION_SKIPPED)
         self._add(messages.REPORT_SECTION_SKIPPED_INTRO)
@@ -541,6 +579,119 @@ class Reporter:
         )
         return ok
 
+    def _section_notes(self) -> bool:
+        """Section 9: every Redmine journal entry and where it goes.
+
+        Grouped by host, exactly like section 8, because the reader's question
+        is the same one - "which notes end up on the project and which on each
+        task". Two deliberate differences from the attachment section:
+
+        1. History-only entries (a status change with no text) are NOT listed
+           one per line. RDM 16467 alone has 63 of them; they would bury the 14
+           notes that matter. They get one aggregate line per host and are
+           still counted, so nothing disappears silently.
+        2. Each migrated note shows a one-line excerpt of its text, so the plan
+           can be checked against Redmine without opening both side by side.
+        """
+        from transform.notes import (  # local import: avoids a cycle
+            FAILED_OUTCOMES,
+            NoteOutcome,
+            SKIPPED_OUTCOMES,
+            SUCCESS_OUTCOMES,
+        )
+
+        planned = self._plan.notes_planned
+        self._section(messages.REPORT_SECTION_9)
+        self._add(messages.REPORT_SECTION_9_INTRO)
+
+        with_text = [item for item in planned if item.journal_id and item.has_text]
+        if not with_text:
+            self._add(messages.REPORT_NOTE_NONE)
+            # Still fall through to the arithmetic: a tree can be all history.
+
+        hosted = [item for item in with_text if item.host_itemtype]
+        homeless = [item for item in with_text if not item.host_itemtype]
+        # History-only entries never reach a host, so they are counted per
+        # issue and shown under whichever host label their issue carries.
+        history_by_label: dict[str, int] = {}
+        for item in planned:
+            if item.outcome is NoteOutcome.HISTORY_ONLY:
+                label = item.host_label or str(item.issue_id)
+                history_by_label[label] = history_by_label.get(label, 0) + 1
+
+        for group in (hosted, homeless):
+            if not group:
+                continue
+            if group is homeless:
+                self._add()
+                self._add(messages.REPORT_NOTE_SKIPPED_HEADER)
+            for label, items in _group_by_host(group):
+                self._add()
+                self._add(
+                    messages.REPORT_NOTE_HOST.format(label=label, count=len(items))
+                )
+                for item in items:
+                    self._add(
+                        messages.REPORT_NOTE_LINE.format(
+                            journal_id=item.journal_id,
+                            author=item.author or "?",
+                            created_on=item.created_on or "?",
+                            status=_note_status(item),
+                        )
+                    )
+                    if item.private:
+                        self._add(messages.REPORT_NOTE_PRIVATE_TAG)
+                    self._add(
+                        messages.REPORT_NOTE_TEXT.format(
+                            text=_note_excerpt(item.text)
+                        )
+                    )
+                    if item.attachment_names:
+                        self._add(
+                            messages.REPORT_NOTE_FILES.format(
+                                names=", ".join(item.attachment_names)
+                            )
+                        )
+                    if item.detail:
+                        self._add(messages.REPORT_NOTE_DETAIL.format(detail=item.detail))
+                # The history count belongs to the host, not to any one note.
+                history = history_by_label.pop(label, 0)
+                if history:
+                    self._add(messages.REPORT_NOTE_HISTORY_ONLY.format(count=history))
+
+        # Issues whose journals are ALL history-only never appear above, so
+        # their counts would otherwise vanish. They are the common case.
+        for label, count in history_by_label.items():
+            self._add()
+            self._add(messages.REPORT_NOTE_HOST_NO_TEXT.format(label=label))
+            self._add(messages.REPORT_NOTE_HISTORY_ONLY.format(count=count))
+
+        # Own arithmetic, mirroring sections 7 and 8 but counting notes.
+        real = [item for item in planned if item.journal_id]
+        counts = {
+            "pending": sum(1 for item in real if item.outcome is NoteOutcome.PLANNED),
+            "done": sum(1 for item in real if item.outcome in SUCCESS_OUTCOMES),
+            "skipped": sum(1 for item in real if item.outcome in SKIPPED_OUTCOMES),
+            "failed": sum(1 for item in real if item.outcome in FAILED_OUTCOMES),
+        }
+        total = len(real)
+        parts_sum = sum(counts.values())
+
+        self._add()
+        self._add(messages.REPORT_NOTE_TOTALS.format(total=total))
+        self._add(messages.REPORT_NOTE_PENDING.format(count=counts["pending"]))
+        self._add(messages.REPORT_NOTE_DONE.format(count=counts["done"]))
+        self._add(messages.REPORT_NOTE_SKIPPED.format(count=counts["skipped"]))
+        self._add(messages.REPORT_NOTE_FAILED.format(count=counts["failed"]))
+        parts = " + ".join(str(value) for value in counts.values())
+        ok = parts_sum == total
+        self._add(
+            messages.REPORT_NOTE_OK.format(parts=parts, total=total)
+            if ok
+            else messages.REPORT_NOTE_FAIL.format(parts=parts_sum, total=total)
+        )
+        return ok
+
     # -- public API --------------------------------------------------------
 
     def render(self) -> str:
@@ -551,11 +702,13 @@ class Reporter:
         self._section_empty_source()
         self._section_unresolved()
         self._section_mandatory()
+        self._section_truncated()
         self._section_skipped_children()
         self._section_relations()
         self._section_never_write()
         self._integrity_ok, _ = self._section_integrity()
         self._attachments_ok = self._section_attachments()
+        self._notes_ok = self._section_notes()
 
         for note in self._plan.notes:
             self._add()
@@ -576,7 +729,7 @@ class Reporter:
 
 
 def _group_by_host(items: list) -> list[tuple[str, list]]:
-    """Attachments grouped by host label, keeping the order they were planned in.
+    """Attachments or notes grouped by host label, in the order they were planned.
 
     Pre-order matters here: the project comes first, then its tasks in tree
     order, which is the order the reader already knows from section 1.
@@ -598,6 +751,27 @@ def _attachment_status(item) -> str:
         str(item.outcome.value), str(item.outcome.value)
     )
     return template.format(glpi_id=item.glpi_document_id or "?")
+
+
+def _note_status(item) -> str:
+    """PT-BR status label for one note, GLPI id filled in when known."""
+    template = messages.REPORT_NOTE_STATUS.get(
+        str(item.outcome.value), str(item.outcome.value)
+    )
+    return template.format(glpi_id=item.glpi_notepad_id or "?")
+
+
+def _note_excerpt(text: str, limit: int = NOTE_EXCERPT_CHARS) -> str:
+    """One-line preview of a note.
+
+    The report is a plan, not an archive: the reader needs to recognise which
+    note a line refers to, and the full text is in Redmine (and, after --apply,
+    in GLPI). Newlines are collapsed so one note stays one line.
+    """
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    return flat[: limit - 1].rstrip() + "…"
 
 
 def _human_size(size: int) -> str:

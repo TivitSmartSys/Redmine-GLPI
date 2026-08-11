@@ -23,6 +23,7 @@ python main.py --issue 20172 --apply                # writes, after an interacti
 python main.py --issue 20172 --apply --yes          # non-interactive confirmation (pipelines)
 python main.py --issue 20238 --db path\to\other.db  # override the SQLite map (default: migration.db)
 python main.py --issue 16467 --apply --skip-attachments  # no file uploads (still reported)
+python main.py --issue 16467 --apply --skip-notes        # no Notepad rows (still reported)
 
 python audit_coverage.py                # dropdown coverage audit, tracker 14 (read-only)
 python audit_coverage.py --tracker 42
@@ -37,14 +38,18 @@ unblock a re-run: the container-15 row carrying `rdmfield` outlives its project,
 so `check_already_migrated` keeps finding it. It clears both caches — the
 orphaned marker and the `migration_map` rows, whose ids it reads from Redmine
 because the table cannot reconstruct a tree on its own. Those ids include the
-**attachment** ids: a `Document` row is keyed by the attachment, not the issue,
-so listing issue ids alone would leave every document row behind. It refuses while the
-host project is alive; a project in the trash counts as orphaned.
+**attachment** ids and the **journal** ids: a `Document` row is keyed by the
+attachment and a `Notepad` row by the journal, not by the issue, so listing
+issue ids alone would leave every document and every note row behind. It refuses
+while the host project is alive; a project in the trash counts as orphaned.
 
 Exit codes: `0` ok, `1` failed/aborted, `2` configuration error.
 
-There is a small pytest suite (`python -m pytest tests -q`) covering the confirm
-gate and the summary figures; there is no linter or build step. Real
+There is a pytest suite (`python -m pytest tests -q`, 93 tests) covering the
+confirm gate, the summary figures, the VARCHAR(255) truncation, and the
+attachment and note phases — host assignment, each section's own arithmetic, the
+line-anchored markers and apply degradation. There is no linter or build step.
+Real
 verification is the dry-run against the test list in spec section 1a — notably
 `20238` (minimal), `18620` (out-of-scope child rule, tracker 41), and `20156`
 (a tracker-18 child, in scope since 2026-08-06).
@@ -85,6 +90,10 @@ Module roles:
 - [transform/faturamento.py](transform/faturamento.py) — finds tracker-15
   issues linked to the root via relations. The other path (a tracker-15
   descendant) is handled by the tree walk.
+- [transform/attachments.py](transform/attachments.py) and
+  [transform/notes.py](transform/notes.py) — plan the files and the notes. Both
+  pure. `notes.py` imports `host_for`/`item_label` from `attachments.py` rather
+  than repeating them: the disposition→host rule is one rule and must not drift.
 - [resolve/](resolve/) — status, user, and dropdown name→id lookups; all three
   return `None` on a miss rather than raising or inventing a value.
 - [store/db.py](store/db.py) — SQLite `migration_map` for idempotence and
@@ -97,13 +106,20 @@ Module roles:
 
 `POST /Project` → container-15 row → tasks parent-before-child → per Faturamento
 a `POST /ProjectTask` then its container-26 row → **attachments** (step 5, added
-2026-08-10). Tasks always set `projects_id` to the root project;
-`projecttasks_id` comes from the parent's entry in `plan.glpi_ids`.
+2026-08-10) → **notes** (step 6, added 2026-08-11). Tasks always set
+`projects_id` to the root project; `projecttasks_id` comes from the parent's
+entry in `plan.glpi_ids`.
 
-Attachments come last because every host item must already exist. Step 4 now
-also registers each Faturamento task in `plan.glpi_ids` — it used to keep the id
-only on the item, which left a Faturamento's files unable to find their host
-(and the tree in the report showing no GLPI id for those rows).
+Attachments and notes come last because every host item must already exist. Step
+4 now also registers each Faturamento task in `plan.glpi_ids` — it used to keep
+the id only on the item, which left a Faturamento's files unable to find their
+host (and the tree in the report showing no GLPI id for those rows).
+
+Notes come after the files, not before: a note names the attachments that
+arrived with it, so by the time it is written those documents are already in
+GLPI. Step 6 needs no `RedmineClient` — the journal text came down with the tree
+during the plan phase, which is why `apply_notes` takes no source client while
+`apply_attachments` does.
 
 ### Attachments → GLPI Documents
 
@@ -139,6 +155,54 @@ uploaded (19 on the project, 3 on the Compras task 14107, 1 on the Faturamento
 task 14109), then `apply_attachments` re-run against an **empty** SQLite map —
 23/23 came back `DEDUP_GLPI`, nothing was uploaded and no link was duplicated.
 
+### Notas → GLPI Notepad
+
+Opened 2026-08-11, the last content phase. The spec does not mention journals at
+all, so like attachments nothing here comes from it.
+
+A Redmine **journal entry that carries text** becomes a `Notepad` row — the
+"Notas" tab — on the item its issue became, by exactly the host rule the files
+follow. Journal entries with no text (a status change, a custom-field edit) are
+the majority: RDM 16467 has 108 journals across its tree and only 17 with text.
+They are **not** written and **not** listed one per line; they get one aggregate
+count per host in report section 9, so nothing vanishes without the reader
+seeing it. A note on an out-of-scope issue is reported and not migrated.
+
+A note's text is copied verbatim. Everything the migration adds rides in a
+header above it: the marker, the provenance, the author and date, `[NOTA PRIVADA
+no Redmine]` when the source entry was private, and the names of the files that
+arrived with that note. **Private notes are migrated with that visible tag** —
+a product decision taken 2026-08-11; GLPI's Notepad has no privacy flag, so
+saying so in the text is the only honest option.
+
+The note↔file association exists **only** in the journal's own `details` rows
+(`property: "attachment"`, `name` = the attachment id, `new_value` = the
+filename). The issue's flat `attachments` list cannot answer which note brought
+what. The bytes are still migrated once, by step 5; the note only names them.
+
+Verified live 2026-08-11 (GLPI 11.0.6): `GET /Project/<id>/Notepad` and
+`GET /ProjectTask/<id>/Notepad` both answer with a list, `GET /Notepad` returns
+rows for both itemtypes, and a flat `POST /Notepad` carrying
+`{itemtype, items_id, content}` was accepted for both hosts — row 4 on Project
+1277 and row 5 on ProjectTask 14107, each read back and purged again.
+`getActiveProfile` has **no `notepad` key at all**: a Notepad row rides on the
+host item's own right, so unlike container 26 this needed no grant.
+
+Proven end to end on 2026-08-11 with RDM 1240 → project 1280: 37 notes written
+(36 on the project, 1 on the Faturamento task of RDM 1126, reached by relation),
+then `apply_notes` re-run against a Notepad-free SQLite map — 37/37 came back
+`DEDUP_GLPI`, nothing was written and the project still held exactly 36 rows.
+Thirty-six is also the number that proves `notepad_rows` asks for a `range`: a
+truncated read would have seen 15 and duplicated the other 21.
+
+**Notes have a dedup marker; tasks still do not.** `Notepad.content` carries
+`rdmnote:<journal id>` on its own first line and `find_notepad_by_marker` is the
+note twin of `find_document_by_marker`, with one deliberate difference: it is
+scoped to a single host item. A Notepad row cannot outlive the item it hangs
+off, so "already migrated" can only ever mean "already on this item" — which is
+also why `reset_migration.py` has nothing to clean on the GLPI side for notes,
+only the local map.
+
 **The `POST /Project` input carries the container-15 values** — see
 `project_create_payload` in [main.py](main.py). Container 15 is type "dom", so
 its fields belong to the Project's own form and the plugin validates its
@@ -167,11 +231,17 @@ adding a code path that reads source data, add the corresponding records —
 nothing may disappear silently. The same rule covers unreachable children,
 cyclic trees, and ignored relations, which are all carried on `ProjectPlan`.
 
-Attachments obey the same rule through a **parallel** mechanism, not the same
-one: `AttachmentOutcome` and report section 8, with its own arithmetic. They are
-deliberately absent from `ProjectPlan.all_records()` — section 7 proves every
-source *field* landed in exactly one bucket, and a file is not a field. Folding
-them in would break the one number the report exists to guarantee.
+Attachments and notes obey the same rule through **parallel** mechanisms, not
+the same one: `AttachmentOutcome` with report section 8, and `NoteOutcome` with
+report section 9, each closing its own arithmetic. Both are deliberately absent
+from `ProjectPlan.all_records()` — section 7 proves every source *field* landed
+in exactly one bucket, and neither a file nor a note is a field. Folding either
+in would break the one number the report exists to guarantee. The three sections
+are independent proofs and must stay that way.
+
+Watch the field name on `ProjectPlan`: `notes` is the apply-time message log
+(`list[str]`, appended to the end of the report) and predates this phase. The
+planned notes live on **`notes_planned`**.
 
 ## Hard rules (spec 13 — do not relax these)
 
@@ -213,9 +283,11 @@ Hydro). As tasks: 14, 42, **18** (Atividades) and **41** (Compras). Tracker
 project — never nested under its Redmine parent — carrying a container-26 row;
 it is the only tracker that drives branching logic. Out of scope: **39** CEMIG
 and **40** Subtarefa Cemig (entirely). Attachments left phase two on 2026-08-10
-and are now migrated as GLPI Documents — see the section above. An
+and are now migrated as GLPI Documents; notes followed on 2026-08-11 as GLPI
+Notepad rows — see both sections above. An
 out-of-scope child is not created in GLPI; it gets an explicit report line, and
-its descendants are skipped too. Scope lives in `config/settings.py`
+its descendants are skipped too — its files and its notes are reported and left
+behind with it. Scope lives in `config/settings.py`
 (`IN_SCOPE_TASK_TRACKERS`, `IN_SCOPE_ROOT_TRACKERS`, `TRACKER_FATURAMENTO`,
 `TRACKER_ATIVIDADES`, `TRACKER_COMPRAS`, `TRACKER_TO_PROJECTTASKTYPE`).
 
@@ -248,6 +320,13 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
   for descendants at all** (`_expand` used `include=("children",)` and
   `discover_from_relations` used `include=()`), so every child and every
   relation-sourced Faturamento looked like it had no files whatsoever.
+- **`journals` has to be requested in all three of those places too**, and it is
+  the same trap one level further: `DEFAULT_INCLUDE`, `_expand` and
+  `discover_from_relations`. Miss any one and the root keeps its notes while
+  every task and every relation-sourced Faturamento silently reads as having
+  none. The proof it works is RDM 16467, whose notes land on the project (14),
+  on the Compras task 19769 (2, descendant path) and on the Faturamento 17539
+  (1, relation path) — one note on each of the three paths.
 - **A multipart upload has to clear this client's own `Content-Type`.**
   `GlpiClient.__init__` sets `application/json` on the session, and `requests`
   only computes a multipart boundary when the header is absent — so
@@ -257,7 +336,15 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
 - `searchText[comment]` finds a document marker, but it is the same substring
   match as everywhere else: `rdmattachment:2931` would match
   `rdmattachment:29314`. `_has_exact_marker` compares whole **lines**, which is
-  why the marker is always written as the comment's first line on its own.
+  why the marker is always written as the comment's first line on its own. The
+  note marker repeats this exactly: `rdmnote:` on its own first line of
+  `Notepad.content`, never folded into the readable author/date line — that line
+  is rebuilt from Redmine on every run, and a marker that moved with it would
+  stop matching and turn dedup into duplication.
+- `notepad_rows` needs `range` for the same reason `document_links` does. It
+  reads through the host sub-item route (`GET /Project/12/Notepad`), which
+  scopes the answer by construction, so unlike the searchText helpers it has
+  nothing to re-filter for exact equality afterwards.
 - **A GLPI list GET returns only the first 15 rows without an explicit `range`.**
   Measured 2026-08-10: project 1277 has 19 linked documents and `document_links`
   read back 15. The four missing rows existed the whole time — the *reader* was
@@ -315,6 +402,29 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
   success. Rights live in `glpi_profilerights`, one row per right: find it with
   `GET /Profile/<id>/ProfileRight` and `PUT /ProfileRight/<row id>` with
   `{"rights": <mask>}`. That is how the 2026-08-07 grant was applied (row 194).
+- **A plugin `text` column is a VARCHAR(255), and going over it leaves an orphan
+  project.** Diagnosed 2026-08-11 on RDM 17444, whose "Andamento do Projeto"
+  holds 446 characters: `POST /Project` answered `ERROR_GLPI_ADD "MySQL query
+  error: Data too long for column 'andamentodoprojetofield' (1406)"`. The trap
+  is not the refusal, it is the order — **GLPI had already committed project
+  1279** and only then did the plugin's add hook fail on its own INSERT. The
+  project survived with no container row, hence no `rdmfield`, hence invisible
+  to dedup: a retry would have created a second one. That is the exact opposite
+  of the mandatory-field case above, where the plugin's *validation* refuses the
+  project before anything is written. Do not conflate the two. A sweep of
+  trackers 14 and 42 found **92 of 5589 issues** over the limit, worst 2788
+  characters (RDM 2313). Closed decision 2026-08-11: `Mapper` truncates at
+  `PLUGIN_TEXT_MAX_LENGTH` for `PLUGIN_CONTAINER_SECTIONS` only, sets
+  `FieldRecord.truncated`, and the report grows a "CAMPOS CORTADOS" block
+  showing both the kept and the dropped half. Core columns (`content`,
+  `comment`) are TEXT and are never cut. The permanent fix is GLPI-side: change
+  field 186 from the plugin's `text` type to `textarea`, which is backed by TEXT.
+- **An attachment can 404 while the Redmine host is perfectly fine.** RDM 1240's
+  77 attachments (2016-2017) all answered 404 on `content_url` while RDM 16467's
+  answered 200 from the same host in the same run — the old files are gone from
+  Redmine's disk. This is data, not configuration: `--apply` degraded exactly as
+  designed, reporting all 77 as `FAILED_DOWNLOAD` while the project, its tasks
+  and its 37 notes were written. Do not go hunting for a broken `REDMINE_URL`.
 - **A permission error can mean the parent is gone.** `POST /ProjectTask` with a
   `projects_id` that no longer exists fails with the same "Você não tem
   permissão" text as a real rights problem, and so does a container row whose

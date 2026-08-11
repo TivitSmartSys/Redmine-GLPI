@@ -26,6 +26,8 @@ from config.settings import (  # noqa: E402
     DOCUMENT_MARKER_PREFIX,
     ITEMTYPE_DOCUMENT,
     ITEMTYPE_FATURAMENTO,
+    ITEMTYPE_NOTEPAD,
+    NOTE_MARKER_PREFIX,
     ConfigError,
     load_settings,
     load_yaml,
@@ -48,6 +50,7 @@ from transform.attachments import (  # noqa: E402
 )
 from transform.faturamento import discover_from_relations  # noqa: E402
 from transform.mapper import Mapper  # noqa: E402
+from transform.notes import NoteOutcome, plan_notes  # noqa: E402
 from transform.tree import Disposition, plan_tree  # noqa: E402
 
 EXIT_OK = 0
@@ -75,6 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--skip-attachments",
         action="store_true",
         help=messages.CLI_HELP_SKIP_ATTACHMENTS,
+    )
+    # Notes follow the same rule as attachments: migrated by default, because a
+    # project without its history is not the migration anyone asked for.
+    parser.add_argument(
+        "--skip-notes",
+        action="store_true",
+        help=messages.CLI_HELP_SKIP_NOTES,
     )
     return parser
 
@@ -205,6 +215,7 @@ def build_project_plan(
     mapping: dict,
     issue_id: int,
     skip_attachments: bool = False,
+    skip_notes: bool = False,
 ) -> ProjectPlan:
     """Read the whole tree and map it into a GLPI plan. Writes nothing."""
     tree = redmine.fetch_tree(issue_id)
@@ -285,6 +296,16 @@ def build_project_plan(
         skip=skip_attachments,
     )
 
+    # Notes share the attachment host rule (transform.notes imports it rather
+    # than repeating it), so they need exactly the same inputs.
+    notes = plan_notes(
+        tree_plan,
+        faturamento_issues=discovery.issues,
+        root_issue_id=int(root_issue["id"]),
+        tree_failures=[*tree.failures, *discovery.failures],
+        skip=skip_notes,
+    )
+
     return ProjectPlan(
         issue=root_issue,
         core=core,
@@ -294,6 +315,7 @@ def build_project_plan(
         faturamento=faturamento,
         skipped_children=skipped,
         attachments=attachments,
+        notes_planned=notes,
         ignored_relations=discovery.ignored_relations,
         tree_failures=[*tree.failures, *discovery.failures],
         tree_cycles=tree.cycles,
@@ -457,9 +479,14 @@ def apply_plan(
             )
         )
 
-    # 5. Attachments -> GLPI Documents. Last, because every host must exist.
+    # 5. Attachments -> GLPI Documents. Every host must exist by now.
     if redmine is not None:
         apply_attachments(glpi, redmine, plan, store)
+
+    # 6. Notes -> GLPI Notepad rows. After the files, so that a note naming an
+    # attachment refers to something already in GLPI. Needs no Redmine client:
+    # the journal text came down with the tree during the plan phase.
+    apply_notes(glpi, plan, store)
 
     print(messages.APPLY_DONE)
     return True
@@ -657,6 +684,158 @@ def _document_comment(item) -> str:
     return "\n".join(lines)
 
 
+def apply_notes(glpi: GlpiClient, plan: ProjectPlan, store: MigrationStore) -> None:
+    """Write each planned note as a Notepad row on its host item.
+
+    Degrades, never aborts - the same rule as the attachments and the
+    container-26 row. By the time this runs the project, its tasks and its
+    files are already in GLPI; raising here would leave a half-migrated project
+    behind for the sake of one note.
+    """
+    pending = [
+        item
+        for item in plan.notes_planned
+        if item.outcome is NoteOutcome.PLANNED and item.host_itemtype
+    ]
+    if not pending:
+        return
+
+    print()
+    print(messages.APPLY_NOTES_HEADER.format(count=len(pending)))
+
+    for item in pending:
+        host_id = plan.glpi_ids.get(item.host_redmine_id)
+        if not host_id:
+            # The host was planned but never created (a task whose POST failed,
+            # or a Faturamento that degraded). Not a note problem - say so.
+            item.outcome = NoteOutcome.NO_HOST
+            item.detail = messages.REPORT_NOTE_HOST_MISSING
+            note = messages.APPLY_NOTE_NO_HOST.format(
+                journal_id=item.journal_id, issue_id=item.issue_id
+            )
+            print(note)
+            plan.notes.append(note)
+            continue
+
+        try:
+            _migrate_one_note(glpi, item, host_id, store)
+        except ApiError as exc:
+            item.outcome = NoteOutcome.FAILED_WRITE
+            item.detail = messages.redact(exc)
+            note = messages.APPLY_NOTE_FAILED.format(
+                journal_id=item.journal_id,
+                issue_id=item.issue_id,
+                detail=messages.redact(exc),
+            )
+            print(note)
+            plan.notes.append(note)
+
+
+def _migrate_one_note(
+    glpi: GlpiClient, item, host_id: int, store: MigrationStore
+) -> None:
+    """One note: dedup, write, record.
+
+    GLPI is asked first and the local map second - deliberately the same order
+    as the project's own dedup (spec 9.1) and the attachments'. The marker in
+    the note's own content survives a lost migration.db.
+
+    Simpler than its attachment twin in one way and stricter in another: there
+    is nothing to download, but the GLPI lookup is scoped to this host item,
+    because a Notepad row cannot outlive the item it hangs off.
+    """
+    existing = glpi.find_notepad_by_marker(
+        item.host_itemtype, host_id, item.journal_id
+    )
+    if existing:
+        notepad_id = int(existing["id"])
+        item.glpi_notepad_id = notepad_id
+        item.outcome = NoteOutcome.DEDUP_GLPI
+        store.record(
+            item.journal_id,
+            notepad_id,
+            ITEMTYPE_NOTEPAD,
+            parent_redmine_id=item.issue_id,
+            status=STATUS_OK,
+        )
+        print(
+            messages.APPLY_NOTE_DEDUP.format(
+                journal_id=item.journal_id,
+                issue_id=item.issue_id,
+                glpi_id=notepad_id,
+            )
+        )
+        return
+
+    local = store.lookup(item.journal_id, ITEMTYPE_NOTEPAD)
+    if local:
+        # The marker is gone from GLPI but the map still points at a row. Trust
+        # it only if the row is really there; otherwise fall through and write
+        # again rather than silently losing the text.
+        if glpi.get_item(ITEMTYPE_NOTEPAD, local.glpi_id):
+            item.glpi_notepad_id = local.glpi_id
+            item.outcome = NoteOutcome.DEDUP_LOCAL
+            return
+
+    notepad_id = glpi.create_notepad(
+        item.host_itemtype, host_id, _notepad_content(item)
+    )
+    item.glpi_notepad_id = notepad_id
+    item.outcome = NoteOutcome.WRITTEN
+    store.record(
+        item.journal_id,
+        notepad_id,
+        ITEMTYPE_NOTEPAD,
+        parent_redmine_id=item.issue_id,
+        status=STATUS_OK,
+    )
+    print(
+        messages.APPLY_NOTE_WRITTEN.format(
+            journal_id=item.journal_id,
+            issue_id=item.issue_id,
+            glpi_id=notepad_id,
+            itemtype=item.host_itemtype,
+            items_id=host_id,
+        )
+    )
+
+
+def _notepad_content(item) -> str:
+    """Notepad.content: the dedup marker first, then provenance, then the text.
+
+    The marker MUST stay on its own first line - find_notepad_by_marker compares
+    whole lines so that rdmnote:1559 cannot match rdmnote:155016. It is
+    deliberately NOT folded into the author line, readable as that would be: the
+    author name is re-read from Redmine on every run and a marker that moved
+    with it would stop matching, turning dedup into duplication.
+
+    The original text is copied verbatim - it is migrated data, never rewritten
+    or translated.
+    """
+    header = [
+        f"{NOTE_MARKER_PREFIX}{item.journal_id}",
+        messages.NOTE_ORIGIN.format(
+            issue_id=item.issue_id, journal_id=item.journal_id
+        ),
+    ]
+    if item.author or item.created_on:
+        header.append(
+            messages.NOTE_AUTHOR.format(
+                author=item.author or "?", created_on=item.created_on or "?"
+            )
+        )
+    if item.private:
+        # GLPI's Notepad has no privacy flag, so the fact is carried as text.
+        # A private Redmine note becomes visible to everyone who can see the
+        # project; saying so is the least the migration can do.
+        header.append(messages.NOTE_PRIVATE)
+    if item.attachment_names:
+        # The files themselves are migrated by step 5 as Documents; this only
+        # names them, so the note still reads as it did in Redmine.
+        header.append(messages.NOTE_FILES.format(names=", ".join(item.attachment_names)))
+    return "\n".join([*header, "", item.text])
+
+
 def confirm_apply() -> bool:
     """Explicit confirmation, required after the plan report (spec 9.2)."""
     try:
@@ -723,7 +902,12 @@ def main(argv: list[str] | None = None) -> int:
                 return EXIT_FAILED
 
             plan = build_project_plan(
-                glpi, redmine, mapping, args.issue, args.skip_attachments
+                glpi,
+                redmine,
+                mapping,
+                args.issue,
+                skip_attachments=args.skip_attachments,
+                skip_notes=args.skip_notes,
             )
 
             print()

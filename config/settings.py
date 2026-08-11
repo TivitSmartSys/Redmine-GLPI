@@ -198,6 +198,53 @@ OBSERVED_SESSION_ENTITY_ID = 75  # informational; not sent in any payload
 ITEMTYPE_DOCUMENT = "Document"
 ITEMTYPE_DOCUMENT_ITEM = "Document_Item"
 
+# ---------------------------------------------------------------------------
+# Notes -> GLPI Notepad (the "Notas" tab)
+#
+# A Redmine journal entry that carries text becomes a Notepad row on the item
+# its issue became. Verified on the live instance 2026-08-11, GLPI 11.0.6:
+#   - GET /Project/1277/Notepad and GET /ProjectTask/14107/Notepad both answer
+#     with a list, so both hosts carry the tab;
+#   - GET /Notepad returns rows with itemtype Project and ProjectTask alike,
+#     i.e. neither host is theoretical;
+#   - GET /getActiveProfile has NO `notepad` key - a Notepad row rides on the
+#     host item's right, and the profile already has project = 1151 and
+#     projecttask = 1151. No new grant is needed, unlike container 26.
+# ---------------------------------------------------------------------------
+ITEMTYPE_NOTEPAD = "Notepad"
+
+# ---------------------------------------------------------------------------
+# Plugin "text" columns are VARCHAR(255)
+#
+# Diagnosed live 2026-08-11 on RDM 17444: POST /Project came back with
+#   ERROR_GLPI_ADD "MySQL query error: Data too long for column
+#   'andamentodoprojetofield' at row 1 (1406)"
+# because "Andamento do Projeto" held 480 characters. Every Fields-plugin field
+# of type `text` (verified via GET /PluginFieldsField: fields 160, 162, 186 and
+# 189 of container 15) lands in a VARCHAR(255); the plugin's `textarea` type is
+# the one backed by TEXT.
+#
+# The failure mode is what makes this dangerous rather than merely annoying:
+# GLPI COMMITS THE PROJECT and only then does the plugin's add hook fail on its
+# own INSERT. The project survives without a container row, so it carries no
+# `rdmfield` marker, dedup cannot see it, and the next run creates a duplicate.
+# That is the opposite of the mandatory-field case, where the plugin's
+# validation refuses the project itself before anything is written.
+#
+# A sweep of trackers 14 and 42 on 2026-08-11 found 92 of 5589 issues over the
+# limit, the worst at 2788 characters (RDM 2313).
+#
+# Closed decision 2026-08-11: truncate and report. This is a deliberate, narrow
+# exception to "copy migrated data verbatim" - the alternative was dropping the
+# field entirely on those 92 projects. Every truncation gets its own report line
+# carrying the original length, so the loss is never silent.
+PLUGIN_TEXT_MAX_LENGTH = 255
+
+# Mapping sections whose columns live in a plugin container, i.e. the ones the
+# limit above applies to. Core GLPI columns (Project.content, Project.comment,
+# ProjectTask.comment) are TEXT and must NOT be truncated.
+PLUGIN_CONTAINER_SECTIONS = frozenset({"container15", "container26"})
+
 # GLPI right name for documents, read from GET /getActiveProfile at preflight.
 GLPI_RIGHTNAME_DOCUMENT = "document"
 GLPI_RIGHT_CREATE = 4
@@ -220,6 +267,19 @@ DOCUMENT_MARKER_PREFIX = "rdmattachment:"
 
 # Range used when pulling glpi_documenttypes in one call at preflight.
 DOCUMENT_TYPE_FETCH_RANGE = "0-999"
+
+# Deduplication marker for notes, written as the FIRST LINE of Notepad.content.
+#
+# A Notepad row has no comment column and no field of its own to hide a marker
+# in, so the marker rides in the visible content. It stays on a line by itself
+# because `_has_exact_marker` compares whole lines - `rdmnote:1559` must not
+# match `rdmnote:155016`, the same substring trap `rdmattachment:` has.
+#
+# Note the asymmetry with documents: a Notepad row dies with its host item,
+# while a Document survives the deletion of the project it was linked to. So
+# this marker proves "this note is already on THIS item", never "this note
+# exists somewhere in GLPI" - which is all the dedup needs.
+NOTE_MARKER_PREFIX = "rdmnote:"
 
 # GLPI answers a list GET with only the first 15 rows unless a range is given.
 # Measured 2026-08-10 against project 1277: it has 19 linked documents and the

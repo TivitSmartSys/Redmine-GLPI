@@ -326,7 +326,9 @@ class JobManager:
             job.emit("phase", "apply")
             with MigrationStore(self._db_path) as store:
                 # `redmine` is what enables step 5: the attachment bytes can
-                # only come from the source system.
+                # only come from the source system. Step 6 (notes) needs no
+                # client - the journal text already came down with the tree.
+                # The panel exposes no skip flags, so both steps always run.
                 cli.apply_plan(glpi, plan, store, redmine=redmine)
 
             # Re-render so the report carries the Redmine -> GLPI ids.

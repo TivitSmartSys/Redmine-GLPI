@@ -147,7 +147,7 @@ def plan_attachments(
 
     for node in tree_plan.nodes:
         seen_issues.add(node.issue_id)
-        host_itemtype, host_id, host_label, detail = _host_for(node, root_issue_id)
+        host_itemtype, host_id, host_label, detail = host_for(node, root_issue_id)
         planned.extend(
             _for_issue(
                 node.node.issue,
@@ -170,7 +170,7 @@ def plan_attachments(
                 issue,
                 host_itemtype=ITEMTYPE_PROJECTTASK,
                 host_redmine_id=issue_id,
-                host_label=_label("Faturamento", issue_id, issue.get("subject") or ""),
+                host_label=item_label("Faturamento", issue_id, issue.get("subject") or ""),
                 detail="",
                 document_types=document_types,
                 skip=skip,
@@ -189,7 +189,7 @@ def plan_attachments(
                 issue_id=int(issue_id),
                 filename="",
                 filesize=0,
-                host_label=_label("RDM", int(issue_id), ""),
+                host_label=item_label("RDM", int(issue_id), ""),
                 outcome=AttachmentOutcome.NO_HOST,
                 detail=DETAIL_UNREACHABLE,
             )
@@ -198,37 +198,43 @@ def plan_attachments(
     return planned
 
 
-def _host_for(node, root_issue_id: int) -> tuple[str | None, int | None, str, str]:
+def host_for(node, root_issue_id: int) -> tuple[str | None, int | None, str, str]:
+    """Where a planned node's payload lands: (itemtype, redmine id, label, why not).
+
+    Public because transform.notes imports it. The disposition -> host rule is
+    the same for a file and for a note, and it must not be able to drift
+    between the two modules.
+    """
     if node.disposition is Disposition.PROJECT:
         return (
             ITEMTYPE_PROJECT,
             root_issue_id,
-            _label("Projeto", node.issue_id, node.subject),
+            item_label("Projeto", node.issue_id, node.subject),
             "",
         )
     if node.disposition is Disposition.TASK:
         return (
             ITEMTYPE_PROJECTTASK,
             node.issue_id,
-            _label("Tarefa", node.issue_id, node.subject),
+            item_label("Tarefa", node.issue_id, node.subject),
             "",
         )
     if node.disposition is Disposition.FATURAMENTO:
         return (
             ITEMTYPE_PROJECTTASK,
             node.issue_id,
-            _label("Faturamento", node.issue_id, node.subject),
+            item_label("Faturamento", node.issue_id, node.subject),
             "",
         )
     return (
         None,
         None,
-        _label("RDM", node.issue_id, node.subject),
+        item_label("RDM", node.issue_id, node.subject),
         node.reason or DETAIL_OUT_OF_SCOPE,
     )
 
 
-def _label(kind: str, issue_id: int, subject: str) -> str:
+def item_label(kind: str, issue_id: int, subject: str) -> str:
     text = f"{kind} RDM {issue_id}"
     if subject:
         text += f" «{subject}»"

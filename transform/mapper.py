@@ -14,7 +14,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from config.settings import TRACKER_TO_PROJECTTASKTYPE
+from config.settings import (
+    PLUGIN_CONTAINER_SECTIONS,
+    PLUGIN_TEXT_MAX_LENGTH,
+    TRACKER_TO_PROJECTTASKTYPE,
+)
 
 DATE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 
@@ -26,6 +30,14 @@ YESNO_TRUE = {"sim", "yes", "y", "1", "true"}
 # a reader that the text below came from the migration rather than being typed
 # into GLPI by hand - do not translate or reword it.
 TASK_COMMENT_HEADER = "[Campos migrados do Redmine]"
+
+# Shown on the record of a value that had to be cut to fit a plugin column.
+# Lives here rather than in report.messages because it is the mapper's own
+# explanation of what it did, exactly like the other _transform details.
+TRUNCATED_DETAIL = (
+    "valor cortado para caber na coluna do GLPI: {original} caracteres na "
+    "origem, {limit} gravados"
+)
 
 
 class Outcome(str, Enum):
@@ -45,6 +57,12 @@ class FieldRecord:
     written_value: Any = None
     detail: str = ""
     mandatory: bool = False
+    # The value WAS written, but it did not fit the GLPI column and was cut to
+    # PLUGIN_TEXT_MAX_LENGTH. Deliberately a flag rather than an Outcome: the
+    # field did reach GLPI, so it belongs in the WRITTEN bucket and the
+    # section-7 arithmetic must not change. The report gives it its own block.
+    truncated: bool = False
+    original_length: int = 0
     # Which Redmine issue this field came from. Empty means the root issue;
     # set for tasks and Faturamento so a report line is never ambiguous when
     # the same field name appears on several issues (e.g. "Cliente").
@@ -140,7 +158,7 @@ class Mapper:
         consumed: set[str] = set()
 
         for entry in entries:
-            self._map_entry(issue, entry, cf_index, consumed, result)
+            self._map_entry(issue, entry, cf_index, consumed, result, section)
 
         if sweep:
             self._sweep_unmapped(section, cf_index, consumed, result)
@@ -264,6 +282,7 @@ class Mapper:
         cf_index: dict[str, dict],
         consumed: set[str],
         result: MappingResult,
+        section: str = "",
     ) -> None:
         column = entry["column"]
         transform = entry.get("transform", "text")
@@ -303,6 +322,28 @@ class Mapper:
             return
 
         value, outcome, detail = self._transform(entry, transform, raw, label)
+
+        # A plugin "text" column is a VARCHAR(255). Over the limit, GLPI commits
+        # the project and THEN fails on the plugin's own INSERT, leaving a
+        # project with no container row and therefore no rdmfield marker - see
+        # PLUGIN_TEXT_MAX_LENGTH. Cutting the value here is what keeps the
+        # project writable at all; the loss is reported, never silent.
+        truncated = False
+        original_length = 0
+        if (
+            outcome is Outcome.WRITTEN
+            and transform == "text"
+            and section in PLUGIN_CONTAINER_SECTIONS
+            and isinstance(value, str)
+            and len(value) > PLUGIN_TEXT_MAX_LENGTH
+        ):
+            original_length = len(value)
+            value = value[:PLUGIN_TEXT_MAX_LENGTH]
+            truncated = True
+            detail = TRUNCATED_DETAIL.format(
+                original=original_length, limit=PLUGIN_TEXT_MAX_LENGTH
+            )
+
         if outcome is Outcome.WRITTEN:
             result.payload[column] = value
         result.records.append(
@@ -314,6 +355,8 @@ class Mapper:
                 written_value=value if outcome is Outcome.WRITTEN else None,
                 detail=detail,
                 mandatory=mandatory,
+                truncated=truncated,
+                original_length=original_length,
             )
         )
 

@@ -39,6 +39,8 @@ from config.settings import (
     ITEMTYPE_DOCUMENT,
     ITEMTYPE_DOCUMENT_ITEM,
     ITEMTYPE_FATURAMENTO,
+    ITEMTYPE_NOTEPAD,
+    NOTE_MARKER_PREFIX,
     SEARCH_FETCH_RANGE,
 )
 from report import messages
@@ -550,6 +552,72 @@ class GlpiClient:
             if str(row.get("items_id")) == str(int(items_id))
             and str(row.get("itemtype")) == itemtype
         ]
+
+    # -- notes ("Notas" tab, glpi_notepads) --------------------------------
+
+    def notepad_rows(self, itemtype: str, items_id: int) -> list[dict]:
+        """Notepad rows already attached to one item.
+
+        Read through the host's sub-item route (`GET /Project/12/Notepad`)
+        rather than a searchText on /Notepad: the sub-item route scopes the
+        answer to the item by construction, so there is nothing to filter for
+        exact equality afterwards.
+
+        `range` is NOT optional. Same trap as document_links, measured
+        2026-08-10: a GLPI list GET returns only the first 15 rows without it,
+        so an item with more than fifteen notes would look like it had fifteen
+        and a re-run would duplicate everything past that.
+        """
+        try:
+            payload = self._request(
+                "GET",
+                f"/{itemtype}/{int(items_id)}/{ITEMTYPE_NOTEPAD}",
+                params={"range": SEARCH_FETCH_RANGE},
+            )
+        except GlpiError as exc:
+            # An item with no notes answers 400/404 in some versions. That is an
+            # empty tab, not a failure.
+            if "ERROR_GLPI_SEARCH" in str(exc) or "404" in str(exc):
+                return []
+            raise
+        if isinstance(payload, list):
+            return [row for row in payload if isinstance(row, dict)]
+        return []
+
+    def find_notepad_by_marker(
+        self, itemtype: str, items_id: int, journal_id: int
+    ) -> dict | None:
+        """The Notepad row on this item carrying `rdmnote:<journal id>`.
+
+        The twin of find_document_by_marker, with one deliberate difference: it
+        is scoped to a single host item. A Notepad row cannot exist without its
+        host, so "already migrated" can only ever mean "already on this item" -
+        there is no orphan case to search the whole instance for.
+        """
+        marker = f"{NOTE_MARKER_PREFIX}{int(journal_id)}"
+        for row in self.notepad_rows(itemtype, items_id):
+            if _has_exact_marker(row.get("content"), marker):
+                return row
+        return None
+
+    def create_notepad(self, itemtype: str, items_id: int, content: str) -> int:
+        """Add one row to an item's "Notas" tab.
+
+        Verified live 2026-08-11 (GLPI 11.0.6): the flat POST /Notepad with
+        itemtype/items_id in the input is accepted for BOTH hosts - row 4 on
+        Project 1277 and row 5 on ProjectTask 14107, each read back through
+        notepad_rows and purged again. No right beyond the host's own was
+        needed; `getActiveProfile` has no `notepad` key at all, so unlike
+        container 26 this needs no grant.
+        """
+        return self._create(
+            f"/{ITEMTYPE_NOTEPAD}",
+            {
+                "itemtype": itemtype,
+                "items_id": int(items_id),
+                "content": content,
+            },
+        )
 
     def _upload(self, path: str, files: dict) -> Any:
         """Multipart POST. See upload_document for why this bypasses _request."""

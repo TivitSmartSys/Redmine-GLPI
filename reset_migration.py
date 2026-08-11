@@ -44,6 +44,7 @@ from config.settings import (  # noqa: E402
 from report import messages  # noqa: E402
 from store.db import MigrationStore  # noqa: E402
 from transform.attachments import attachments_of  # noqa: E402
+from transform.notes import journals_of  # noqa: E402
 from transform.faturamento import discover_from_relations  # noqa: E402
 from transform.tree import plan_tree  # noqa: E402
 
@@ -96,28 +97,34 @@ def collect_tree_ids(redmine: RedmineClient, issue_id: int) -> list[int]:
     listing them costs nothing, and it keeps the reset complete if the scope
     ever widens.
 
-    ATTACHMENT ids are collected too. A Document row stores the id of the
-    *attachment*, not of the issue, so a reset that only listed issue ids would
-    leave every document row behind - and the next run would then trust a map
-    pointing at documents it can no longer explain. Issue ids and attachment ids
-    come from different counters, but they never collide in the table: the
-    primary key is (redmine_id, glpi_itemtype) and documents use their own
-    itemtype.
+    ATTACHMENT ids and JOURNAL ids are collected too. A Document row stores the
+    id of the *attachment* and a Notepad row the id of the *journal*, not of the
+    issue, so a reset that only listed issue ids would leave every document and
+    every note row behind - and the next run would then trust a map pointing at
+    rows it can no longer explain. The three counters are independent, but they
+    never collide in the table: the primary key is (redmine_id, glpi_itemtype)
+    and each of Document and Notepad uses its own itemtype.
 
     The GLPI documents themselves are deliberately NOT deleted here. Their
     `rdmattachment:` marker survives, so a re-run finds them and simply re-links
     them to the newly created items instead of uploading 55 MB again.
+
+    Notepad rows need no such care, and that is the one asymmetry worth naming:
+    a note hangs off its host item and is destroyed with it, so once the project
+    is gone there is nothing left in GLPI to clean up - only the local map.
     """
     tree = redmine.fetch_tree(issue_id)
     ids: list[int] = []
     for planned in plan_tree(tree.root).nodes:
         ids.append(planned.issue_id)
         ids.extend(_attachment_ids(planned.node.issue))
+        ids.extend(_journal_ids(planned.node.issue))
     # Second Faturamento path: tracker-15 partners found through relations, which
     # are not part of the tree walk (spec 6.5, step 1).
     for related in discover_from_relations(redmine, tree.root.issue).issues:
         ids.append(int(related["id"]))
         ids.extend(_attachment_ids(related))
+        ids.extend(_journal_ids(related))
     return ids
 
 
@@ -125,6 +132,21 @@ def _attachment_ids(issue: dict) -> list[int]:
     return [
         int(item["id"])
         for item in attachments_of(issue)
+        if item.get("id") is not None
+    ]
+
+
+def _journal_ids(issue: dict) -> list[int]:
+    """Every journal id, text or not.
+
+    History-only entries never produced a Notepad row, so listing them finds
+    nothing - which is cheaper than deciding here which entries the migration
+    considered worth writing, a rule that lives in transform.notes and may
+    change without this file noticing.
+    """
+    return [
+        int(item["id"])
+        for item in journals_of(issue)
         if item.get("id") is not None
     ]
 

@@ -16,6 +16,7 @@ from config.settings import MANDATORY_CONTAINER26_COLUMNS
 from report.reporter import ProjectPlan
 from transform.attachments import summarise as summarise_attachments
 from transform.mapper import Outcome
+from transform.notes import summarise as summarise_notes
 
 
 def _outcome_counts(plan: ProjectPlan) -> dict[str, int]:
@@ -75,6 +76,11 @@ def summarise(plan: ProjectPlan) -> dict:
     attachment_counts = summarise_attachments(
         [item for item in plan.attachments if item.attachment_id]
     )
+    # Same filter, same reason: a placeholder for an unreadable issue carries
+    # no journal id and is excluded, exactly as report section 9 excludes it.
+    note_counts = summarise_notes(
+        [item for item in plan.notes_planned if item.journal_id]
+    )
 
     return {
         "issue_id": plan.issue_id,
@@ -105,6 +111,17 @@ def summarise(plan: ProjectPlan) -> dict:
         "attachments_skipped": attachment_counts["skipped"],
         "attachments_failed": attachment_counts["failed"],
         "attachments_bytes": attachment_counts["bytes"],
+        # Notes keep their own counters for the same reason files do - and
+        # separate from the files', because section 9 closes its own arithmetic.
+        "notes": note_counts["total"],
+        "notes_pending": note_counts["pending"],
+        "notes_done": note_counts["done"],
+        "notes_skipped": note_counts["skipped"],
+        "notes_failed": note_counts["failed"],
+        # Split out so a panel can say "14 notas de texto entre 77 entradas"
+        # instead of implying 63 notes went missing.
+        "notes_with_text": note_counts["with_text"],
+        "notes_history_only": note_counts["history_only"],
         "skipped_children": len(plan.skipped_children),
         "ignored_relations": len(plan.ignored_relations),
         "tree_failures": len(plan.tree_failures),

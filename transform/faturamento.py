@@ -57,8 +57,11 @@ def discover_from_relations(redmine, root_issue: dict) -> FaturamentoDiscovery:
         try:
             # `attachments` since 2026-08-10: a Faturamento reached by relation
             # becomes a ProjectTask that hosts its own files, and with the empty
-            # include it arrived here without the key at all.
-            partner = redmine.fetch_issue(partner_id, include=("attachments",))
+            # include it arrived here without the key at all. `journals` since
+            # 2026-08-11 for the same reason - that task hosts its own notes too.
+            partner = redmine.fetch_issue(
+                partner_id, include=("attachments", "journals")
+            )
         except RedmineError as exc:
             # A relation we could not resolve still reaches the report.
             discovery.failures.append((partner_id, str(exc)))

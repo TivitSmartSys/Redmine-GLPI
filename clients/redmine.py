@@ -19,7 +19,7 @@ from clients.errors import RedmineError
 from config.settings import HTTP_TIMEOUT_SECONDS
 from report import messages
 
-DEFAULT_INCLUDE = ("children", "attachments", "relations")
+DEFAULT_INCLUDE = ("children", "attachments", "relations", "journals")
 
 # Attachments are streamed to a temporary file, never held in memory.
 _DOWNLOAD_CHUNK = 64 * 1024
@@ -193,8 +193,10 @@ class RedmineClient:
                 # IS required - it was absent here until 2026-08-10, so every
                 # descendant looked like it had no files at all and the whole
                 # attachment migration silently covered the root issue only.
+                # `journals` carries exactly the same trap and was added on
+                # 2026-08-11 for exactly the same reason.
                 child_issue = self.fetch_issue(
-                    child_id, include=("children", "attachments")
+                    child_id, include=("children", "attachments", "journals")
                 )
             except RedmineError as exc:
                 result.failures.append((child_id, str(exc)))
