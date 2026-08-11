@@ -23,9 +23,16 @@ profile already has (project 1151, projecttask 1151).
 This module is pure: it reads issue dicts and writes plan objects. Nothing is
 fetched and nothing is written here.
 
+**Text is what makes a journal entry a note.** An entry with no text is history
+- a status change, a field edit, or a file uploaded with no comment beside it -
+and history does not belong in the Notas tab. Its files are not lost: every
+attachment reaches its project or task through the Documentos tab regardless of
+any note (transform.attachments), and only files that came with a real note are
+additionally attached to that note.
+
 Reporting contract (spec 13, rule 7): every journal entry gets a PlannedNote,
-including the ones that will never be migrated. A history-only entry (a status
-change with no text) is not a loss, but it must still be visible in the count.
+including the ones that will never be migrated. A history-only entry is not a
+loss, but it must still be visible in the count.
 """
 
 from __future__ import annotations
@@ -46,6 +53,7 @@ __all__ = [
     "NoteOutcome",
     "PlannedNote",
     "journals_of",
+    "journal_by_attachment",
     "plan_notes",
     "summarise",
     "SUCCESS_OUTCOMES",
@@ -108,9 +116,9 @@ class PlannedNote:
     private: bool = False
     text: str = ""
     # Filenames that arrived WITH this note, read from the journal's own
-    # details (property "attachment"). The bytes are migrated by step 5 as
-    # Documents; the note only names them, so the reader sees which file the
-    # text is talking about.
+    # details (property "attachment"). Step 6 links those files to this note's
+    # Notepad row as well as to the project; the names stay in the text because
+    # a file that fails to upload would otherwise leave no trace at all.
     attachment_names: list[str] = field(default_factory=list)
     # Where it goes. None means "nowhere" - the issue is not in GLPI.
     host_itemtype: str | None = None
@@ -124,6 +132,13 @@ class PlannedNote:
     @property
     def has_text(self) -> bool:
         return bool(self.text.strip())
+
+    # A note is a journal entry WITH TEXT. Closed decision 2026-08-11, after a
+    # brief spell where a text-less entry carrying a file was written as a note
+    # too: in the GLPI UI that reads as history leaking into the Notas tab. An
+    # upload with nothing written next to it is history, and its file belongs in
+    # the Documentos tab - which it reaches anyway, because every attachment is
+    # linked to its project or task regardless of any note.
 
 
 def journals_of(issue: dict) -> list[dict]:
@@ -151,6 +166,37 @@ def attachment_names_of(journal: dict) -> list[str]:
         if name:
             names.append(name)
     return names
+
+
+def journal_by_attachment(issue: dict) -> dict[int, int]:
+    """attachment id -> journal id, for files that arrived with a real note.
+
+    Reads exactly the same detail rows as `attachment_names_of`, from the other
+    side: there `new_value` is the filename, here `name` is the attachment id
+    (Redmine sends it as a string). This is what lets step 6 attach a document
+    to the note it arrived with, on top of the project's Documentos tab.
+
+    **Only journals that carry text are indexed**, because only those become
+    notes. A file uploaded with no comment next to it is history: it still
+    reaches GLPI through its project or task, but there is no note to attach it
+    to and pretending otherwise would send step 6 chasing a row that was never
+    written. An attachment in no journal at all - one uploaded when the issue was
+    created - is likewise absent from the map.
+    """
+    index: dict[int, int] = {}
+    for journal in journals_of(issue):
+        journal_id = int(journal.get("id") or 0)
+        if not journal_id or not str(journal.get("notes") or "").strip():
+            continue
+        for detail in journal.get("details") or []:
+            if not isinstance(detail, dict) or detail.get("property") != "attachment":
+                continue
+            try:
+                attachment_id = int(str(detail.get("name") or "").strip())
+            except ValueError:
+                continue
+            index[attachment_id] = journal_id
+    return index
 
 
 def plan_notes(

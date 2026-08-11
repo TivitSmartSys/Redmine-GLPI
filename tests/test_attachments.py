@@ -101,6 +101,66 @@ def test_host_follows_the_disposition_of_the_issue():
     assert out_of_scope.detail  # never silent: the report needs a reason
 
 
+def journal(journal_id: int, attachment_ids: list[int], text: str = "") -> dict:
+    """A journal entry that carried some files, in Redmine's own shape."""
+    return {
+        "id": journal_id,
+        "user": {"name": "jeane.silva"},
+        "created_on": "2026-03-31T19:06:04Z",
+        "notes": text,
+        "details": [
+            {"property": "attachment", "name": str(a), "new_value": f"arquivo{a}.pdf"}
+            for a in attachment_ids
+        ],
+    }
+
+
+def test_every_file_is_hosted_by_its_item_and_notes_only_add_a_link():
+    """The Documentos tab is where users look, so the ITEM host is universal.
+
+    A file that came with a note gets `host_journal_id` on top of that, and
+    step 6 turns it into a second Document_Item. It never replaces the first.
+    """
+    root = TreeNode(
+        issue=issue(
+            16467, 14,
+            [attachment(1), attachment(2), attachment(3)],
+            journals=[
+                journal(155253, [2], text="Segue a TAP."),  # a real note
+                journal(155302, [3]),                       # upload, no comment
+            ],
+        )
+    )
+    planned = plan_attachments(plan_tree(root), [], root_issue_id=16467)
+    by_id = {item.attachment_id: item for item in planned}
+
+    # All three live on the project - that is the Documentos tab.
+    assert all(by_id[n].host_itemtype == "Project" for n in (1, 2, 3))
+    assert all(by_id[n].host_redmine_id == 16467 for n in (1, 2, 3))
+
+    # Only the one that came with a TEXT note also points at a journal.
+    assert by_id[2].host_journal_id == 155253
+    # Attachment 1 belongs to no journal, attachment 3 to a text-less one:
+    # neither has a note to be linked to.
+    assert by_id[1].host_journal_id is None
+    assert by_id[3].host_journal_id is None
+
+
+def test_note_file_on_an_out_of_scope_issue_has_no_host_at_all():
+    """No item and no note there, so there is nothing to link to."""
+    root = tree_with_children(
+        children=[
+            TreeNode(issue=issue(30000, 39, [attachment(4)],
+                                 journals=[journal(999, [4], text="nota")]))
+        ],
+        root_attachments=[],
+    )
+    planned = plan_attachments(plan_tree(root), [], root_issue_id=16467)
+    item = next(p for p in planned if p.attachment_id == 4)
+    assert item.outcome is AttachmentOutcome.NO_HOST
+    assert item.host_journal_id is None
+
+
 def test_relation_faturamento_is_counted_once():
     """A tracker-15 partner arrives through relations, a descendant through the
     tree. Both paths feeding the same issue must not double the files."""

@@ -306,10 +306,13 @@ REPORT_RELATION_LINE = (
 # total would break the one number the report exists to guarantee.
 # ---------------------------------------------------------------------------
 REPORT_SECTION_8_INTRO = (
-    "  Cada anexo do Redmine vira um Documento do GLPI ligado ao item "
-    "correspondente.\n  A simulação NÃO baixa nenhum arquivo — nomes e tamanhos "
-    "vêm dos metadados da API."
+    "  Cada anexo do Redmine vira um Documento do GLPI na aba Documentos do "
+    "item\n  correspondente. O que veio junto com uma nota é vinculado TAMBÉM à "
+    "nota,\n  sem duplicar o arquivo — um Documento, dois vínculos.\n"
+    "  A simulação NÃO baixa nenhum arquivo — nomes e tamanhos vêm dos "
+    "metadados da API."
 )
+REPORT_ATTACHMENT_ALSO_NOTE = "        também vinculado à nota {journal_id}"
 REPORT_ATTACHMENT_HOST = "  {label} — {count} arquivo(s), {size}"
 REPORT_ATTACHMENT_LINE = "    - {filename}  ({size}) {status}"
 REPORT_ATTACHMENT_DETAIL = "        {detail}"
@@ -333,6 +336,13 @@ REPORT_ATTACHMENT_STATUS = {
 
 REPORT_ATTACHMENT_HOST_MISSING = (
     "o item de destino não foi criado no GLPI (veja os avisos acima)"
+)
+# The extra link to the file's own note failed. The document itself is already
+# on the project, so this is a lost convenience, never a lost file.
+APPLY_ATTACHMENT_NOTE_LINK_FAILED = (
+    "[AVISO] O anexo {attachment_id} foi migrado, mas não pôde ser vinculado "
+    "também à nota {journal_id}: {detail}\n"
+    "  O arquivo está na aba Documentos do item."
 )
 
 # Written into Document.comment, so this text lands in the GLPI database and is
@@ -363,9 +373,11 @@ REPORT_ATTACHMENT_FAIL = (
 # arithmetic, and mixing any two would break the guarantee the report exists for.
 # ---------------------------------------------------------------------------
 REPORT_SECTION_9_INTRO = (
-    "  Cada nota de texto do Redmine vira uma linha na aba Notas do item "
-    "correspondente.\n  Entradas de histórico sem texto (mudança de status, de "
-    "campo) não geram nota e\n  aparecem apenas no total, agrupadas por item."
+    "  Cada nota de texto do Redmine vira uma linha na aba Notas do item\n"
+    "  correspondente. O que não tem texto é histórico, não nota: mudança de\n"
+    "  status, de campo, ou um arquivo enviado sem comentário. Essas entradas\n"
+    "  não geram nota e aparecem apenas no total, agrupadas por item — os\n"
+    "  arquivos delas continuam indo para a aba Documentos (seção 8)."
 )
 REPORT_NOTE_HOST = "  {label} — {count} nota(s) de texto"
 REPORT_NOTE_HOST_NO_TEXT = "  {label} — sem notas de texto"

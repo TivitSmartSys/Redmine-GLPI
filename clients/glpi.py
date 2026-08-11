@@ -522,6 +522,13 @@ class GlpiClient:
         itemtype/items_id in the upload input: the result is deterministic, and
         the same call re-links a document that already exists in GLPI - the
         deduplication path, where there is nothing to upload.
+
+        Three hosts are in use: `Project`, `ProjectTask`, and - since
+        2026-08-11 - `Notepad`, which is how a file attached to a note is
+        stored. Verified live that day against a throwaway Notepad row: GLPI
+        accepted the flat payload below and filled `entities_id` itself (75).
+        Note that `Notepad` is absent from `CFG_GLPI['document_types']`; that
+        list governs the "Documentos" TAB, not the ability to hold a document.
         """
         return self._create(
             f"/{ITEMTYPE_DOCUMENT_ITEM}",

@@ -103,6 +103,11 @@ class ProjectPlan:
     # redmine_id -> GLPI id, filled during --apply so the report can show the
     # Redmine -> GLPI correspondence required by spec section 10.
     glpi_ids: dict = field(default_factory=dict)
+    # Redmine JOURNAL id -> GLPI Notepad id, filled by step 5 so step 6 can hang
+    # a file off the note it arrived with. Deliberately a separate map: glpi_ids
+    # is keyed by ISSUE id and journals are numbered independently, so one dict
+    # would let a journal id silently answer a lookup for an issue.
+    glpi_notepad_ids: dict = field(default_factory=dict)
 
     @property
     def issue_id(self) -> int:
@@ -540,6 +545,12 @@ class Reporter:
                             status=_attachment_status(item),
                         )
                     )
+                    if item.host_journal_id:
+                        self._add(
+                            messages.REPORT_ATTACHMENT_ALSO_NOTE.format(
+                                journal_id=item.host_journal_id
+                            )
+                        )
                     if item.detail:
                         self._add(
                             messages.REPORT_ATTACHMENT_DETAIL.format(detail=item.detail)
@@ -604,13 +615,16 @@ class Reporter:
         self._section(messages.REPORT_SECTION_9)
         self._add(messages.REPORT_SECTION_9_INTRO)
 
-        with_text = [item for item in planned if item.journal_id and item.has_text]
-        if not with_text:
+        # Text is what makes a journal entry a note. A file uploaded with no
+        # comment beside it is history, and its file reaches GLPI through the
+        # Documentos tab of its item - reported in section 8, not here.
+        real = [item for item in planned if item.journal_id and item.has_text]
+        if not real:
             self._add(messages.REPORT_NOTE_NONE)
             # Still fall through to the arithmetic: a tree can be all history.
 
-        hosted = [item for item in with_text if item.host_itemtype]
-        homeless = [item for item in with_text if not item.host_itemtype]
+        hosted = [item for item in real if item.host_itemtype]
+        homeless = [item for item in real if not item.host_itemtype]
         # History-only entries never reach a host, so they are counted per
         # issue and shown under whichever host label their issue carries.
         history_by_label: dict[str, int] = {}

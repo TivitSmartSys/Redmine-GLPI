@@ -34,6 +34,7 @@ from transform.tree import Disposition
 
 ITEMTYPE_PROJECT = "Project"
 ITEMTYPE_PROJECTTASK = "ProjectTask"
+ITEMTYPE_NOTEPAD = "Notepad"
 
 
 class AttachmentOutcome(str, Enum):
@@ -105,6 +106,12 @@ class PlannedAttachment:
     # Where it goes. None means "nowhere" - the issue is not in GLPI.
     host_itemtype: str | None = None
     host_redmine_id: int | None = None
+    # Set when this file arrived WITH a Redmine note that carries text, i.e. it
+    # appears in that journal's details. The file is then linked to the note's
+    # Notepad row IN ADDITION to its project or task - never instead of it.
+    # Users need every file reachable from one place, the Documentos tab, so the
+    # item link is the one that always happens and the note link is the extra.
+    host_journal_id: int | None = None
     # Purely for the report, so a line reads "Tarefa RDM 19769 «...»".
     host_label: str = ""
     outcome: AttachmentOutcome = AttachmentOutcome.PLANNED
@@ -241,6 +248,8 @@ def item_label(kind: str, issue_id: int, subject: str) -> str:
     return text
 
 
+
+
 def _for_issue(
     issue: dict,
     host_itemtype: str | None,
@@ -253,9 +262,26 @@ def _for_issue(
     issue_id = int(issue["id"])
     result: list[PlannedAttachment] = []
 
+    # Local import: transform.notes imports host_for/item_label from this
+    # module, so a module-level import here would be a cycle. Same pattern
+    # report.reporter uses for the outcome enums.
+    from transform.notes import journal_by_attachment
+
+    # Which journal each attachment arrived with, counting only journals that
+    # became notes (i.e. that carry text). A hit means the file gets a SECOND
+    # link, to that note; it never changes where the file primarily lives.
+    journal_of = journal_by_attachment(issue)
+
     for raw in attachments_of(issue):
+        attachment_id = int(raw.get("id") or 0)
+
+        # The host is ALWAYS the item, which is what puts the file on the
+        # Documentos tab where users go looking for it. Out of scope there is no
+        # item and no note either, so the file stays NO_HOST.
+        journal_id = journal_of.get(attachment_id) if host_itemtype else None
+
         item = PlannedAttachment(
-            attachment_id=int(raw.get("id") or 0),
+            attachment_id=attachment_id,
             issue_id=issue_id,
             filename=str(raw.get("filename") or "").strip(),
             filesize=int(raw.get("filesize") or 0),
@@ -266,6 +292,7 @@ def _for_issue(
             created_on=str(raw.get("created_on") or ""),
             host_itemtype=host_itemtype,
             host_redmine_id=host_redmine_id,
+            host_journal_id=journal_id,
             host_label=host_label,
         )
 

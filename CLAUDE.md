@@ -45,7 +45,7 @@ while the host project is alive; a project in the trash counts as orphaned.
 
 Exit codes: `0` ok, `1` failed/aborted, `2` configuration error.
 
-There is a pytest suite (`python -m pytest tests -q`, 93 tests) covering the
+There is a pytest suite (`python -m pytest tests -q`, 99 tests) covering the
 confirm gate, the summary figures, the VARCHAR(255) truncation, and the
 attachment and note phases — host assignment, each section's own arithmetic, the
 line-anchored markers and apply degradation. There is no linter or build step.
@@ -105,20 +105,25 @@ Module roles:
 ### Write order (fixed by spec 9.2)
 
 `POST /Project` → container-15 row → tasks parent-before-child → per Faturamento
-a `POST /ProjectTask` then its container-26 row → **attachments** (step 5, added
-2026-08-10) → **notes** (step 6, added 2026-08-11). Tasks always set
-`projects_id` to the root project; `projecttasks_id` comes from the parent's
-entry in `plan.glpi_ids`.
+a `POST /ProjectTask` then its container-26 row → **notes** (step 5) →
+**attachments** (step 6). Tasks always set `projects_id` to the root project;
+`projecttasks_id` comes from the parent's entry in `plan.glpi_ids`.
 
-Attachments and notes come last because every host item must already exist. Step
-4 now also registers each Faturamento task in `plan.glpi_ids` — it used to keep
+Step 4 also registers each Faturamento task in `plan.glpi_ids` — it used to keep
 the id only on the item, which left a Faturamento's files unable to find their
 host (and the tree in the report showing no GLPI id for those rows).
 
-Notes come after the files, not before: a note names the attachments that
-arrived with it, so by the time it is written those documents are already in
-GLPI. Step 6 needs no `RedmineClient` — the journal text came down with the tree
-during the plan phase, which is why `apply_notes` takes no source client while
+**Notes before attachments, and the order is load-bearing.** It was the other
+way round when the notes phase landed on 2026-08-11 and was reversed the same
+day: a file that arrived with a Redmine note is linked to that note's `Notepad`
+row, so the row has to exist first. `apply_notes` records every id it produces
+in `plan.glpi_notepad_ids` (keyed by **journal** id — a separate map from
+`glpi_ids`, which is keyed by issue id and would otherwise answer a journal
+lookup with an issue's project). Attachments stay last because by then every
+possible host exists: project, task, and note.
+
+Step 5 needs no `RedmineClient` — the journal text came down with the tree
+during the plan phase — which is why `apply_notes` takes no source client while
 `apply_attachments` does.
 
 ### Attachments → GLPI Documents
@@ -160,11 +165,20 @@ task 14109), then `apply_attachments` re-run against an **empty** SQLite map —
 Opened 2026-08-11, the last content phase. The spec does not mention journals at
 all, so like attachments nothing here comes from it.
 
-A Redmine **journal entry that carries text** becomes a `Notepad` row — the
-"Notas" tab — on the item its issue became, by exactly the host rule the files
-follow. Journal entries with no text (a status change, a custom-field edit) are
-the majority: RDM 16467 has 108 journals across its tree and only 17 with text.
-They are **not** written and **not** listed one per line; they get one aggregate
+**Text is what makes a journal entry a note.** A `Notepad` row — the "Notas" tab
+— is written for a journal entry with text, on the item its issue became, by
+exactly the host rule the files follow. Everything else is *histórico*: a status
+change, a custom-field edit, **or a file uploaded with no comment beside it**.
+
+That last case was briefly migrated as a note (2026-08-11) and reverted the same
+day on the manager's instruction: in Redmine, attaching a file creates a journal
+entry that very often has no text at all — RDM 17582 has nine, RDM 18826 three —
+and writing those as notes puts bare uploads into the Notas tab, where they read
+as history leaking in. **Do not re-open this by pointing out that the file then
+has no note to hang on.** It does not need one: every attachment is linked to
+its project or task regardless, which is what the Documentos tab shows.
+
+History entries are **not** listed one per line either — they get one aggregate
 count per host in report section 9, so nothing vanishes without the reader
 seeing it. A note on an out-of-scope issue is reported and not migrated.
 
@@ -173,12 +187,57 @@ header above it: the marker, the provenance, the author and date, `[NOTA PRIVADA
 no Redmine]` when the source entry was private, and the names of the files that
 arrived with that note. **Private notes are migrated with that visible tag** —
 a product decision taken 2026-08-11; GLPI's Notepad has no privacy flag, so
-saying so in the text is the only honest option.
+saying so in the text is the only honest option. The filename line stays even
+though the files are attached for real: an upload that fails would otherwise
+leave no trace in the note at all, and the note's content must not depend on the
+outcome of a step that has not run yet.
 
-The note↔file association exists **only** in the journal's own `details` rows
-(`property: "attachment"`, `name` = the attachment id, `new_value` = the
-filename). The issue's flat `attachments` list cannot answer which note brought
-what. The bytes are still migrated once, by step 5; the note only names them.
+Plain text is correct here — verified in the UI on project 1280: GLPI honours
+the line breaks, so there is no reason to generate HTML and no reason to hide
+the marker.
+
+### A note's file: one Document, two links
+
+A `Notepad` row can hold a file. Confirmed 2026-08-11 by reading a note a user
+created by hand in the GLPI UI (Notepad 50 on project 1269): the file became
+`Document` 170 and the link is **`Document_Item{documents_id: 170, itemtype:
+'Notepad', items_id: 50}`**. There is no `#tag#` in the content — GLPI renders
+the list from `Document_Item`. The API accepts the same row (verified against a
+throwaway Notepad the same day; GLPI fills `entities_id` itself).
+
+GLPI's UI links that file to the note **only** — `document_links('Project',
+1269)` was empty. **The migration deliberately does not copy that.** Closed
+decision 2026-08-11: a file is always linked to its project or task, so the
+Documentos tab lists every file of a project in one place, and a file that came
+with a text note gets a **second** link to that note. One Document, two links,
+no duplicated bytes. Linking only to the note hides the file from the tab people
+actually browse.
+
+Two details worth keeping:
+
+- `PlannedAttachment.host_itemtype` always names the **item**, never `Notepad`;
+  the note is an addition resolved at apply time from `host_journal_id` via
+  `plan.glpi_notepad_ids`. `_link_all_hosts` does the item link first and
+  **swallows a failure of the note link** — the document is already on the
+  project by then, so one broken note must not mark a migrated file as failed.
+- The note↔file association exists **only** in the journal's `details` rows
+  (`property: "attachment"`, `name` = the attachment id, `new_value` = the
+  filename). The issue's flat `attachments` list cannot answer which note
+  brought what. `journal_by_attachment` reads those same rows from the other
+  side — and indexes **only journals that carry text**, since only those become
+  notes.
+
+Proven end to end 2026-08-11 with RDM 17582 → project 1283: 6 notes written (the
+six journal entries that carry text; the nine bare uploads stayed history), 11
+files on the project's Documentos tab and 1 on the Faturamento task's — which
+has **no** notes at all, exactly as intended. An earlier run of the same issue,
+before the rules were corrected, proved the dedup side: with the `Notepad` and
+`Document` rows removed from the SQLite map, 16/16 notes and 12/12 files came
+back `DEDUP_GLPI` with no row and no link duplicated.
+
+Still unproven live: the **second** link, for a file arriving with a note that
+also has text. RDM 17582 has no such journal — its text notes carry no files —
+so only the unit tests cover it. `20472` has one and is not yet migrated.
 
 Verified live 2026-08-11 (GLPI 11.0.6): `GET /Project/<id>/Notepad` and
 `GET /ProjectTask/<id>/Notepad` both answer with a list, `GET /Notepad` returns
@@ -419,6 +478,22 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
   showing both the kept and the dropped half. Core columns (`content`,
   `comment`) are TEXT and are never cut. The permanent fix is GLPI-side: change
   field 186 from the plugin's `text` type to `textarea`, which is backed by TEXT.
+- **`Notepad` is absent from `CFG_GLPI['document_types']` and holds documents
+  anyway.** That list (40 itemtypes on 2026-08-11, `Project` and `ProjectTask`
+  among them) governs which itemtypes get a **Documentos tab** — not which can
+  be the target of a `Document_Item`. Reading it as the latter is what produced
+  the wrong conclusion that a note cannot carry a file. The authority is
+  `Document_Item` itself: `POST` with `itemtype='Notepad'` was accepted over the
+  API that day and GLPI filled `entities_id` (75) on its own.
+- **`document_max_size` is not the real ceiling; PHP's `post_max_size` is, and
+  the API does not expose it.** RDM 17582's 33.5 MB `.eml` was refused with
+  `ERROR_UPLOAD_FILE_TOO_BIG_POST_MAX_SIZE` even though `getGlpiConfig` reports
+  `document_max_size = 50` (MB) and `DOCUMENT_MAX_SIZE_BYTES` let it through.
+  Nothing in `getGlpiConfig` carries the PHP limit, so the dry-run cannot
+  predict this one — the upload is attempted and the refusal is reported as
+  `FAILED_UPLOAD`, which is the right behaviour. Raising it is a server-side
+  change to `php.ini` (`post_max_size` and `upload_max_filesize`); do not lower
+  `DOCUMENT_MAX_SIZE_BYTES` to guess at it.
 - **An attachment can 404 while the Redmine host is perfectly fine.** RDM 1240's
   77 attachments (2016-2017) all answered 404 on `content_url` while RDM 16467's
   answered 200 from the same host in the same run — the old files are gone from

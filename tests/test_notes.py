@@ -32,6 +32,7 @@ from config.settings import (  # noqa: E402
 )
 from report import messages  # noqa: E402
 from report.reporter import ProjectPlan, Reporter  # noqa: E402
+from transform.attachments import AttachmentOutcome, PlannedAttachment  # noqa: E402
 from transform.mapper import FieldRecord, MappingResult, Outcome  # noqa: E402
 from transform.notes import (  # noqa: E402
     NoteOutcome,
@@ -158,9 +159,27 @@ def test_unreadable_child_is_still_visible():
 
 def test_history_only_entry_is_classified_as_such_not_as_a_note():
     """A status change carries no text. It is not a loss, and it must not be
-    counted as one - RDM 16467 has 63 of these against 14 real notes."""
+    counted as one - RDM 16467 has 63 of these."""
     root = tree_with_children(children=[], root_journals=[journal(1, text="")])
     planned = plan_notes(plan_tree(root), [], root_issue_id=16467)
+    assert planned[0].outcome is NoteOutcome.HISTORY_ONLY
+    assert not planned[0].has_text
+
+
+def test_a_file_uploaded_without_a_comment_is_history_not_a_note():
+    """Text is what makes a journal entry a note.
+
+    Attaching a file in Redmine creates an entry that often has no text at all.
+    Writing those as notes put uploads into the Notas tab, where they read as
+    history leaking in - so they stay history. The file is not lost: it reaches
+    GLPI through the Documentos tab of its item, like every other attachment.
+    """
+    root = tree_with_children(
+        children=[],
+        root_journals=[journal(155253, text="", attachments=[(2, "TAP.pdf")])],
+    )
+    planned = plan_notes(plan_tree(root), [], root_issue_id=16467)
+
     assert planned[0].outcome is NoteOutcome.HISTORY_ONLY
     assert not planned[0].has_text
 
@@ -209,13 +228,18 @@ def test_skip_flag_keeps_the_notes_in_the_report():
 def test_summarise_closes_its_arithmetic():
     root = tree_with_children(
         children=[TreeNode(issue=issue(30000, 39, [journal(4)]))],
-        root_journals=[journal(1), journal(2, text="")],
+        root_journals=[
+            journal(1),
+            journal(2, text=""),
+            journal(3, text="", attachments=[(9, "anexo.pdf")]),
+        ],
     )
     counts = summarise(plan_notes(plan_tree(root), [], root_issue_id=16467))
-    assert counts["total"] == 3
-    assert counts["pending"] + counts["done"] + counts["skipped"] + counts["failed"] == 3
+    assert counts["total"] == 4
+    assert counts["pending"] + counts["done"] + counts["skipped"] + counts["failed"] == 4
     assert counts["with_text"] == 2
-    assert counts["history_only"] == 1
+    # Journal 2 has no text and journal 3 has only a file: both are history.
+    assert counts["history_only"] == 2
 
 
 # -- the reporting contract -------------------------------------------------
@@ -425,6 +449,123 @@ def test_existing_marker_dedups_without_writing():
     assert notes[0].glpi_notepad_id == 77
     assert glpi.written == []
     assert store.records == [(1, 77, ITEMTYPE_NOTEPAD)]
+
+
+# -- step 5 -> step 6: the file lands on its note ---------------------------
+
+
+class FakeRedmineDownload:
+    def download_attachment(self, _content_url, dest_path):
+        Path(dest_path).write_bytes(b"conteudo")
+        return 8
+
+
+class FakeGlpiWithDocuments(FakeGlpi):
+    """FakeGlpi plus just enough of the document side for apply_attachments."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.links = []
+        self._doc_id = 500
+
+    def find_document_by_marker(self, _attachment_id):
+        return []
+
+    def document_links(self, itemtype, items_id):
+        return [
+            {"documents_id": d, "itemtype": t, "items_id": i}
+            for d, t, i in self.links
+            if t == itemtype and i == items_id
+        ]
+
+    def upload_document(self, _path, name, comment):
+        self._doc_id += 1
+        return self._doc_id
+
+    def link_document(self, document_id, itemtype, items_id):
+        self.links.append((document_id, itemtype, items_id))
+        return len(self.links)
+
+
+def note_plus_file_plan():
+    """One note carrying one file, both planned against the same journal."""
+    note = hosted_note(155253, text="Segue a TAP.", attachment_names=["TAP.pdf"])
+    attachment = PlannedAttachment(
+        attachment_id=2,
+        issue_id=16467,
+        filename="TAP.pdf",
+        filesize=10,
+        content_url="http://x/2",
+        host_itemtype="Project",
+        host_redmine_id=16467,
+        host_journal_id=155253,
+        host_label="Nota RDM 16467 · nota 155253",
+    )
+    plan = minimal_plan([note])
+    plan.attachments = [attachment]
+    plan.glpi_ids = {16467: 1265}
+    return plan, note, attachment
+
+
+def test_file_is_linked_to_both_the_item_and_its_note():
+    """One document, two links.
+
+    The item link is what puts the file on the Documentos tab, where users
+    browse every file of a project in one place; the note link is what makes it
+    visible in the note it belongs to. Neither replaces the other, and the
+    bytes are uploaded once.
+    """
+    plan, note, attachment = note_plus_file_plan()
+    glpi = FakeGlpiWithDocuments()
+    store = FakeStore()
+
+    main.apply_notes(glpi, plan, store)
+    main.apply_attachments(glpi, FakeRedmineDownload(), plan, store)
+
+    assert note.outcome is NoteOutcome.WRITTEN
+    assert plan.glpi_notepad_ids[155253] == note.glpi_notepad_id
+    assert glpi.links == [
+        (attachment.glpi_document_id, "Project", 1265),
+        (attachment.glpi_document_id, ITEMTYPE_NOTEPAD, note.glpi_notepad_id),
+    ]
+
+
+def test_file_still_reaches_the_project_when_its_note_was_never_written():
+    """The note link is an extra. Without it the file is still on the tab."""
+    plan, _note, attachment = note_plus_file_plan()
+    glpi = FakeGlpiWithDocuments()
+    store = FakeStore()
+
+    # Step 5 never ran (or its write failed): no Notepad id was registered.
+    main.apply_attachments(glpi, FakeRedmineDownload(), plan, store)
+
+    assert attachment.outcome is AttachmentOutcome.UPLOADED
+    assert glpi.links == [(attachment.glpi_document_id, "Project", 1265)]
+
+
+def test_apply_plan_writes_notes_before_attachments(monkeypatch):
+    """Order is load-bearing, not cosmetic: step 6 resolves a file's host from
+    the Notepad ids step 5 registers. Swap them and every note-borne file
+    silently falls back to the project."""
+    called: list[str] = []
+
+    class ProjectOnlyGlpi:
+        def create_project(self, _payload):
+            return 1265
+
+        def write_additional_fields_row(self, _project_id, _values):
+            return 1
+
+    monkeypatch.setattr(main, "apply_notes",
+                        lambda *_a, **_k: called.append("notes"))
+    monkeypatch.setattr(main, "apply_attachments",
+                        lambda *_a, **_k: called.append("attachments"))
+
+    plan = minimal_plan([])
+    main.apply_plan(ProjectOnlyGlpi(), plan, FakeStore(),
+                    redmine=FakeRedmineDownload())
+
+    assert called == ["notes", "attachments"]
 
 
 def test_note_whose_host_was_never_created_is_reported():
