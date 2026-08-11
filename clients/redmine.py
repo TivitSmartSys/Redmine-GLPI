@@ -10,6 +10,7 @@ rejects that mistake at startup.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Iterable
 
 import requests
@@ -19,6 +20,9 @@ from config.settings import HTTP_TIMEOUT_SECONDS
 from report import messages
 
 DEFAULT_INCLUDE = ("children", "attachments", "relations")
+
+# Attachments are streamed to a temporary file, never held in memory.
+_DOWNLOAD_CHUNK = 64 * 1024
 
 
 @dataclass
@@ -184,9 +188,14 @@ class RedmineClient:
             visited.add(child_id)
 
             try:
-                # include=children only; relations of descendants are not part
-                # of the Faturamento algorithm (spec 6.5 uses the root's).
-                child_issue = self.fetch_issue(child_id, include=("children",))
+                # No `relations`: those of descendants are not part of the
+                # Faturamento algorithm (spec 6.5 uses the root's). `attachments`
+                # IS required - it was absent here until 2026-08-10, so every
+                # descendant looked like it had no files at all and the whole
+                # attachment migration silently covered the root issue only.
+                child_issue = self.fetch_issue(
+                    child_id, include=("children", "attachments")
+                )
             except RedmineError as exc:
                 result.failures.append((child_id, str(exc)))
                 continue
@@ -194,6 +203,49 @@ class RedmineClient:
             child_node = TreeNode(issue=child_issue)
             node.children.append(child_node)
             self._expand(child_node, visited, result)
+
+    def download_attachment(self, content_url: str, dest_path) -> int:
+        """Stream one attachment to disk. Returns the byte count written.
+
+        Streamed rather than read into memory: the spec's own reference case
+        (issue 17582) carries 55 MB across 12 files, the largest a 35 MB .eml.
+
+        The download goes through the same session, so it carries the
+        X-Redmine-API-Key header - `content_url` points at /attachments/download/…
+        which is a normal authenticated Redmine URL, not part of the REST API.
+        """
+        target = Path(dest_path)
+        target.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            with self._session.get(
+                content_url, stream=True, timeout=self._timeout
+            ) as response:
+                if response.status_code >= 400:
+                    raise RedmineError(
+                        messages.redact(
+                            messages.HTTP_ERROR.format(
+                                status=response.status_code,
+                                method="GET",
+                                path=content_url,
+                                detail=response.text[:200],
+                            )
+                        )
+                    )
+                written = 0
+                with target.open("wb") as handle:
+                    for chunk in response.iter_content(chunk_size=_DOWNLOAD_CHUNK):
+                        if chunk:
+                            handle.write(chunk)
+                            written += len(chunk)
+        except requests.RequestException as exc:
+            raise RedmineError(
+                messages.redact(
+                    messages.CONNECTION_ERROR.format(system="Redmine", detail=exc)
+                )
+            ) from exc
+
+        return written
 
     def close(self) -> None:
         self._session.close()

@@ -14,9 +14,15 @@ this table is a cache and a crash guard, not a replacement for it.
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+
+# SQLite refuses a statement with more than SQLITE_MAX_VARIABLE_NUMBER bound
+# parameters (999 on the builds that ship with CPython). A Faturamento tree can
+# hold thousands of issues, so every IN (...) below is split into batches.
+_CHUNK_SIZE = 500
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS migration_map (
@@ -33,6 +39,18 @@ CREATE TABLE IF NOT EXISTS migration_map (
 STATUS_OK = "ok"
 STATUS_PARTIAL = "partial"
 STATUS_FAILED = "failed"
+
+
+def _chunks(redmine_ids: Iterable[int]) -> list[list[int]]:
+    """Deduplicated ids, in batches small enough to bind in one statement."""
+    unique: list[int] = []
+    seen: set[int] = set()
+    for value in redmine_ids:
+        number = int(value)
+        if number not in seen:
+            seen.add(number)
+            unique.append(number)
+    return [unique[i : i + _CHUNK_SIZE] for i in range(0, len(unique), _CHUNK_SIZE)]
 
 
 @dataclass(frozen=True)
@@ -106,15 +124,55 @@ class MigrationStore:
         return [self._to_entry(row) for row in rows]
 
     def entries_for_root(self, root_redmine_id: int) -> list[MigrationEntry]:
+        # The second predicate used to read `parent_redmine_id IS NOT NULL`,
+        # which is unbound and matched every row that has any parent - i.e. other
+        # trees as well. Harmless while nothing called this, fatal the moment a
+        # delete is built on top of it.
         rows = self._conn.execute(
             """
             SELECT * FROM migration_map
-            WHERE redmine_id = ? OR parent_redmine_id IS NOT NULL
+            WHERE redmine_id = ? OR parent_redmine_id = ?
             ORDER BY migrated_at
             """,
-            (int(root_redmine_id),),
+            (int(root_redmine_id), int(root_redmine_id)),
         ).fetchall()
         return [self._to_entry(row) for row in rows]
+
+    def entries_for_ids(self, redmine_ids: Iterable[int]) -> list[MigrationEntry]:
+        """Every row belonging to the given issues, whatever the itemtype.
+
+        The table has no root column and Faturamento rows are recorded with
+        `parent_redmine_id = NULL`, so a tree cannot be reconstructed from the
+        table alone - the caller passes the ids it read from Redmine.
+        """
+        found: list[MigrationEntry] = []
+        for chunk in _chunks(redmine_ids):
+            placeholders = ",".join("?" * len(chunk))
+            rows = self._conn.execute(
+                f"SELECT * FROM migration_map WHERE redmine_id IN ({placeholders}) "
+                "ORDER BY migrated_at",
+                chunk,
+            ).fetchall()
+            found.extend(self._to_entry(row) for row in rows)
+        return found
+
+    def delete_for_ids(self, redmine_ids: Iterable[int]) -> int:
+        """Forget the given issues. Returns how many rows were removed.
+
+        Used by reset_migration.py so an issue whose GLPI project was deleted
+        can be migrated again: without this the local map keeps pointing tasks
+        at GLPI ids that no longer exist and apply_plan skips them.
+        """
+        removed = 0
+        for chunk in _chunks(redmine_ids):
+            placeholders = ",".join("?" * len(chunk))
+            cursor = self._conn.execute(
+                f"DELETE FROM migration_map WHERE redmine_id IN ({placeholders})",
+                chunk,
+            )
+            removed += cursor.rowcount
+        self._conn.commit()
+        return removed
 
     @staticmethod
     def _to_entry(row: sqlite3.Row) -> MigrationEntry:

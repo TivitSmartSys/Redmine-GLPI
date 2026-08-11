@@ -184,6 +184,50 @@ MANDATORY_CONTAINER26_COLUMNS: tuple[str, ...] = ()
 OBSERVED_SESSION_ENTITY_ID = 75  # informational; not sent in any payload
 
 # ---------------------------------------------------------------------------
+# Attachments -> GLPI Documents (spec section 3 left these out of v1; opened
+# 2026-08-10).
+#
+# A Redmine attachment becomes a Document linked through Document_Item to the
+# item its issue became. Verified on the live instance 2026-08-10, GLPI 11.0.6:
+#   - CFG_GLPI['document_types'] lists both Project and ProjectTask, so both
+#     hosts carry a "Documentos" tab;
+#   - the API profile has document = 255 (every bit);
+#   - glpi_documenttypes holds 76 rows, .xlsb/.msg/.eml/.ods among them, all
+#     is_uploadable = 1 - which matters because RDM 16467 uses all four.
+# ---------------------------------------------------------------------------
+ITEMTYPE_DOCUMENT = "Document"
+ITEMTYPE_DOCUMENT_ITEM = "Document_Item"
+
+# GLPI right name for documents, read from GET /getActiveProfile at preflight.
+GLPI_RIGHTNAME_DOCUMENT = "document"
+GLPI_RIGHT_CREATE = 4
+
+# CFG_GLPI['document_max_size'] read live 2026-08-10: 50 (MB). Kept as a
+# constant rather than read per run - a file over the limit is skipped and
+# reported before anything is downloaded, and the value has to be known during
+# the dry-run, which never opens a GLPI config call for it.
+DOCUMENT_MAX_SIZE_MB = 50
+DOCUMENT_MAX_SIZE_BYTES = DOCUMENT_MAX_SIZE_MB * 1024 * 1024
+
+# Deduplication marker for documents, written into Document.comment.
+#
+# The same reasoning as `rdmfield` on container 15 (spec 9.1): Redmine and GLPI
+# ids are independent, so the marker - not the id - is what proves a file was
+# already migrated. GLPI is the authority; the SQLite map is a cache.
+# Containers 16 and 26 have no marker field at all, which is why tasks rely on
+# the local map alone; documents deliberately do not repeat that weakness.
+DOCUMENT_MARKER_PREFIX = "rdmattachment:"
+
+# Range used when pulling glpi_documenttypes in one call at preflight.
+DOCUMENT_TYPE_FETCH_RANGE = "0-999"
+
+# GLPI answers a list GET with only the first 15 rows unless a range is given.
+# Measured 2026-08-10 against project 1277: it has 19 linked documents and the
+# read-back reported 15. Anything that must see EVERY row of a search - the
+# Document_Item links of one item, above all - has to ask for a range.
+SEARCH_FETCH_RANGE = "0-999"
+
+# ---------------------------------------------------------------------------
 # Defaults
 # ---------------------------------------------------------------------------
 DEFAULT_DB_PATH = PROJECT_ROOT / "migration.db"

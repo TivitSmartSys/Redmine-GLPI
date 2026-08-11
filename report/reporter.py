@@ -79,6 +79,11 @@ class ProjectPlan:
     tasks: list[PlannedTask] = field(default_factory=list)
     faturamento: list[PlannedFaturamento] = field(default_factory=list)
     skipped_children: list[SkippedChild] = field(default_factory=list)
+    # PlannedAttachment list from transform.attachments. Deliberately NOT part
+    # of all_records(): section 7 proves that every source FIELD landed in one
+    # bucket, and a file is not a field. Attachments close their own arithmetic
+    # in section 8.
+    attachments: list = field(default_factory=list)
     ignored_relations: list = field(default_factory=list)
     tree_failures: list = field(default_factory=list)
     tree_cycles: list = field(default_factory=list)
@@ -442,6 +447,100 @@ class Reporter:
         )
         return ok, counts
 
+    def _section_attachments(self) -> bool:
+        """Section 8: every Redmine attachment and where it goes.
+
+        Grouped by host so the reader sees the answer to the actual question -
+        "which files end up on the project and which on each task". Files with
+        no host are listed separately: they are not a failure, they are the
+        documented consequence of an issue being out of scope.
+        """
+        from transform.attachments import (  # local import: avoids a cycle
+            AttachmentOutcome,
+            FAILED_OUTCOMES,
+            SKIPPED_OUTCOMES,
+            SUCCESS_OUTCOMES,
+        )
+
+        planned = self._plan.attachments
+        self._section(messages.REPORT_SECTION_8)
+        self._add(messages.REPORT_SECTION_8_INTRO)
+
+        if not planned:
+            self._add(messages.REPORT_ATTACHMENT_NONE)
+            return True
+
+        hosted = [item for item in planned if item.host_itemtype]
+        homeless = [item for item in planned if not item.host_itemtype]
+
+        for group in (hosted, homeless):
+            if not group:
+                continue
+            if group is homeless:
+                self._add()
+                self._add(messages.REPORT_ATTACHMENT_SKIPPED_HEADER)
+            for label, items in _group_by_host(group):
+                self._add()
+                self._add(
+                    messages.REPORT_ATTACHMENT_HOST.format(
+                        label=label,
+                        count=sum(1 for item in items if item.attachment_id),
+                        size=_human_size(sum(item.filesize for item in items)),
+                    )
+                )
+                for item in items:
+                    if not item.attachment_id:
+                        # Placeholder for an issue we could not read at all.
+                        self._add(messages.REPORT_ATTACHMENT_DETAIL.format(
+                            detail=item.detail
+                        ))
+                        continue
+                    self._add(
+                        messages.REPORT_ATTACHMENT_LINE.format(
+                            filename=item.filename,
+                            size=_human_size(item.filesize),
+                            status=_attachment_status(item),
+                        )
+                    )
+                    if item.detail:
+                        self._add(
+                            messages.REPORT_ATTACHMENT_DETAIL.format(detail=item.detail)
+                        )
+                    if item.warning:
+                        self._add(
+                            messages.REPORT_ATTACHMENT_WARNING.format(
+                                warning=item.warning
+                            )
+                        )
+
+        # Own arithmetic, mirroring section 7 but counting files.
+        real = [item for item in planned if item.attachment_id]
+        counts = {
+            "pending": sum(
+                1 for item in real if item.outcome is AttachmentOutcome.PLANNED
+            ),
+            "done": sum(1 for item in real if item.outcome in SUCCESS_OUTCOMES),
+            "skipped": sum(1 for item in real if item.outcome in SKIPPED_OUTCOMES),
+            "failed": sum(1 for item in real if item.outcome in FAILED_OUTCOMES),
+        }
+        total = len(real)
+        parts_sum = sum(counts.values())
+
+        self._add()
+        self._add(messages.REPORT_ATTACHMENT_TOTALS.format(total=total))
+        self._add(messages.REPORT_ATTACHMENT_PENDING.format(count=counts["pending"]))
+        self._add(messages.REPORT_ATTACHMENT_DONE.format(count=counts["done"]))
+        self._add(messages.REPORT_ATTACHMENT_SKIPPED.format(count=counts["skipped"]))
+        self._add(messages.REPORT_ATTACHMENT_FAILED.format(count=counts["failed"]))
+        parts = " + ".join(str(value) for value in counts.values())
+        ok = parts_sum == total
+        self._add(
+            messages.REPORT_ATTACHMENT_OK.format(parts=parts, total=total)
+            if ok
+            else messages.REPORT_ATTACHMENT_FAIL.format(parts=parts_sum, total=total)
+        )
+        return ok
+
     # -- public API --------------------------------------------------------
 
     def render(self) -> str:
@@ -456,6 +555,7 @@ class Reporter:
         self._section_relations()
         self._section_never_write()
         self._integrity_ok, _ = self._section_integrity()
+        self._attachments_ok = self._section_attachments()
 
         for note in self._plan.notes:
             self._add()
@@ -473,6 +573,40 @@ class Reporter:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(self.render(), encoding="utf-8")
         return target
+
+
+def _group_by_host(items: list) -> list[tuple[str, list]]:
+    """Attachments grouped by host label, keeping the order they were planned in.
+
+    Pre-order matters here: the project comes first, then its tasks in tree
+    order, which is the order the reader already knows from section 1.
+    """
+    groups: dict[str, list] = {}
+    order: list[str] = []
+    for item in items:
+        label = item.host_label or str(item.issue_id)
+        if label not in groups:
+            groups[label] = []
+            order.append(label)
+        groups[label].append(item)
+    return [(label, groups[label]) for label in order]
+
+
+def _attachment_status(item) -> str:
+    """PT-BR status label for one attachment, GLPI id filled in when known."""
+    template = messages.REPORT_ATTACHMENT_STATUS.get(
+        str(item.outcome.value), str(item.outcome.value)
+    )
+    return template.format(glpi_id=item.glpi_document_id or "?")
+
+
+def _human_size(size: int) -> str:
+    """Byte count as KB/MB. Display only - never used for a decision."""
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.0f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
 
 
 def default_report_path(issue_id: int, directory: str | Path = ".") -> Path:

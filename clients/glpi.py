@@ -12,6 +12,8 @@ exceptions.
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 import requests
@@ -25,16 +27,34 @@ from clients.errors import (
 from config.settings import (
     CONTAINER_ID_ADDITIONAL_FIELDS,
     CONTAINER_ID_FATURAMENTO,
+    DOCUMENT_MARKER_PREFIX,
+    DOCUMENT_TYPE_FETCH_RANGE,
     DROPDOWN_FETCH_RANGE,
+    GLPI_RIGHT_CREATE,
     GLPI_RIGHT_UPDATE,
+    GLPI_RIGHTNAME_DOCUMENT,
     GLPI_RIGHTNAME_PROJECTTASK,
     HTTP_TIMEOUT_SECONDS,
     ITEMTYPE_ADDITIONAL_FIELDS,
+    ITEMTYPE_DOCUMENT,
+    ITEMTYPE_DOCUMENT_ITEM,
     ITEMTYPE_FATURAMENTO,
+    SEARCH_FETCH_RANGE,
 )
 from report import messages
 
 OK_STATUS_CODES = frozenset({200, 201, 206, 207})
+
+
+def _has_exact_marker(comment: Any, marker: str) -> bool:
+    """True when `marker` is a whole line of `comment`.
+
+    Line-anchored on purpose: the marker is written as the first line of the
+    comment, so `rdmattachment:2931` cannot match `rdmattachment:29314`.
+    """
+    if not comment:
+        return False
+    return any(line.strip() == marker for line in str(comment).splitlines())
 
 
 def _error_code(payload: Any) -> str | None:
@@ -62,6 +82,10 @@ class GlpiClient:
         self._http.headers.update({"Content-Type": "application/json"})
         # Dropdown dictionaries cached at preflight: itemtype -> {lookup_key: id}
         self._dropdown_cache: dict[str, dict[str, int]] = {}
+        # glpi_documenttypes extensions, loaded once at preflight. None means
+        # "not loaded", which the report treats as "cannot warn", never as
+        # "no extension is allowed".
+        self._document_types: set[str] | None = None
 
     # -- session -----------------------------------------------------------
 
@@ -318,7 +342,17 @@ class GlpiClient:
         rows = self._search(ITEMTYPE_ADDITIONAL_FIELDS, {"searchText[rdmfield]": wanted})
         return [row for row in rows if str(row.get("rdmfield", "")).strip() == wanted]
 
-    def _search(self, itemtype: str, params: dict) -> list[dict]:
+    def _search(self, itemtype: str, params: dict, full_range: bool = False) -> list[dict]:
+        """GLPI list search. `full_range` lifts the server's default page size.
+
+        TRAP, measured 2026-08-10 on project 1277: without an explicit `range`
+        GLPI returns only the first **15** rows. The project had 19 documents
+        and the read-back reported 15, which would make _ensure_link believe the
+        last four were unlinked and post duplicates GLPI then refuses - a
+        failure that looks like a rights problem and is not one.
+        """
+        if full_range:
+            params = {**params, "range": SEARCH_FETCH_RANGE}
         try:
             payload = self._request("GET", f"/{itemtype}", params=params)
         except GlpiError as exc:
@@ -330,6 +364,233 @@ class GlpiClient:
         if isinstance(payload, list):
             return [row for row in payload if isinstance(row, dict)]
         return []
+
+    def get_item(self, itemtype: str, item_id: int) -> dict | None:
+        """One item, or None when it no longer exists.
+
+        Used by reset_migration.py to tell an orphaned `rdmfield` marker from a
+        live one: a container row survives the project it was attached to, so
+        "the marker exists" does not mean "the project exists". A deleted item
+        answers 404 or ERROR_ITEM_NOT_FOUND - both mean absent, not broken.
+        Note a project in the GLPI trash still answers here, with is_deleted 1.
+        """
+        try:
+            payload = self._request("GET", f"/{itemtype}/{int(item_id)}")
+        except GlpiError as exc:
+            if "ERROR_ITEM_NOT_FOUND" in str(exc) or "404" in str(exc):
+                return None
+            raise
+        return payload if isinstance(payload, dict) else None
+
+    def delete_item(self, itemtype: str, item_id: int, force_purge: bool = True) -> None:
+        """Delete one item. The only destructive call in this client.
+
+        Written for reset_migration.py and called there on plugin container rows
+        only - never on a Project or a ProjectTask. force_purge skips the trash,
+        which is what an orphaned container row needs: left in the bin its
+        `rdmfield` value would still be found by find_by_rdmfield and keep
+        blocking the migration.
+        """
+        body: dict[str, Any] = {"input": {"id": int(item_id)}}
+        if force_purge:
+            body["force_purge"] = True
+        self._request("DELETE", f"/{itemtype}/{int(item_id)}", json_body=body)
+
+    # -- documents (attachments) -------------------------------------------
+
+    def can_create_documents(self) -> bool | None:
+        """Whether the API profile may create a Document.
+
+        Same shape and same caution as can_write_projecttask_containers: None
+        means "could not tell", and an unknown is never reported as a missing
+        right. Read live 2026-08-10 the profile answered document = 255.
+        """
+        try:
+            payload = self._request("GET", "/getActiveProfile")
+        except ApiError:
+            return None
+
+        profile = payload.get("active_profile", payload) if isinstance(payload, dict) else None
+        if not isinstance(profile, dict):
+            return None
+
+        try:
+            right = int(profile[GLPI_RIGHTNAME_DOCUMENT])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return bool(right & GLPI_RIGHT_CREATE)
+
+    def load_document_types(self) -> set[str]:
+        """Extensions GLPI accepts, from glpi_documenttypes. Cached.
+
+        Used for a REPORT WARNING only. GLPI stores some `ext` values as
+        patterns rather than plain strings, so a miss here can be a false alarm
+        - the upload is attempted anyway and GLPI stays the authority. Verified
+        2026-08-10: 76 rows, with .xlsb/.msg/.eml/.ods present and uploadable,
+        which are exactly the ones RDM 16467 needs.
+        """
+        if self._document_types is not None:
+            return self._document_types
+
+        rows = self._request(
+            "GET", "/DocumentType", params={"range": DOCUMENT_TYPE_FETCH_RANGE}
+        )
+        extensions: set[str] = set()
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            # is_uploadable 0 means the type exists but the upload form refuses
+            # it, which for our purposes is the same as absent.
+            if not int(row.get("is_uploadable") or 0):
+                continue
+            ext = str(row.get("ext") or "").strip().lower()
+            if ext:
+                extensions.add(ext)
+        self._document_types = extensions
+        return extensions
+
+    def document_type_extensions(self) -> set[str] | None:
+        """The cached extension set, or None when preflight could not load it."""
+        return self._document_types
+
+    def find_document_by_marker(self, attachment_id: int) -> list[dict]:
+        """Documents carrying the migration marker for one Redmine attachment.
+
+        The document twin of find_by_rdmfield, and it needs the same defence:
+        searchText is a LIKE '%value%' match, so `rdmattachment:2931` would also
+        match `rdmattachment:29314`. Results are filtered for an exact marker,
+        delimited by the line break the comment is built with.
+        """
+        marker = f"{DOCUMENT_MARKER_PREFIX}{int(attachment_id)}"
+        rows = self._search(ITEMTYPE_DOCUMENT, {"searchText[comment]": marker})
+        return [row for row in rows if _has_exact_marker(row.get("comment"), marker)]
+
+    def upload_document(self, path, name: str, comment: str) -> int:
+        """POST /Document with the file itself. Returns the new document id.
+
+        The legacy API takes an upload as multipart/form-data with a JSON
+        manifest beside the bytes:
+
+            uploadManifest = {"input": {"name": ..., "_filename": ["file.pdf"]}}
+            filename[0]    = <the bytes>
+
+        `_filename` must repeat the name of the uploaded part - GLPI matches the
+        two to find the file.
+
+        TRAP: this client sets Content-Type: application/json on the session
+        (see __init__). requests only computes the multipart boundary when the
+        header is absent, so it has to be cleared for THIS request - otherwise
+        GLPI receives a body it cannot parse and reports an empty upload. That
+        is why uploads do not go through _request().
+
+        entities_id is deliberately not sent, for the reason recorded in
+        config/settings.py: GLPI files the item in the session's active entity.
+        """
+        file_path = Path(path)
+        manifest = {
+            "input": {
+                "name": name,
+                "comment": comment,
+                "_filename": [file_path.name],
+            }
+        }
+
+        with file_path.open("rb") as handle:
+            files = {
+                "uploadManifest": (
+                    None,
+                    json.dumps(manifest, ensure_ascii=False),
+                    "application/json",
+                ),
+                "filename[0]": (file_path.name, handle, "application/octet-stream"),
+            }
+            payload = self._upload("/Document", files)
+
+        new_id = self._extract_id(payload)
+        if new_id is None:
+            raise GlpiError(
+                messages.redact(f"POST /Document: resposta sem id ({payload})")
+            )
+        return new_id
+
+    def link_document(self, document_id: int, itemtype: str, items_id: int) -> int:
+        """Attach an existing Document to an item (the "Documentos" tab).
+
+        Done as an explicit POST /Document_Item rather than by passing
+        itemtype/items_id in the upload input: the result is deterministic, and
+        the same call re-links a document that already exists in GLPI - the
+        deduplication path, where there is nothing to upload.
+        """
+        return self._create(
+            f"/{ITEMTYPE_DOCUMENT_ITEM}",
+            {
+                "documents_id": int(document_id),
+                "itemtype": itemtype,
+                "items_id": int(items_id),
+            },
+        )
+
+    def document_links(self, itemtype: str, items_id: int) -> list[dict]:
+        """Document_Item rows already attached to one item.
+
+        searchText is a substring match on both fields here, so the rows are
+        filtered for exact equality - `items_id=1` would otherwise match 1265.
+        """
+        rows = self._search(
+            ITEMTYPE_DOCUMENT_ITEM,
+            {
+                "searchText[itemtype]": itemtype,
+                "searchText[items_id]": str(int(items_id)),
+            },
+            full_range=True,
+        )
+        return [
+            row
+            for row in rows
+            if str(row.get("items_id")) == str(int(items_id))
+            and str(row.get("itemtype")) == itemtype
+        ]
+
+    def _upload(self, path: str, files: dict) -> Any:
+        """Multipart POST. See upload_document for why this bypasses _request."""
+        url = f"{self._base_url}{path}"
+        headers = self._auth_headers()
+        # None removes the session-level application/json so requests can set
+        # multipart/form-data with its own boundary.
+        headers["Content-Type"] = None
+
+        try:
+            response = self._http.post(
+                url, files=files, headers=headers, timeout=self._timeout
+            )
+        except requests.RequestException as exc:
+            raise GlpiError(
+                messages.redact(
+                    messages.CONNECTION_ERROR.format(system="GLPI", detail=exc)
+                )
+            ) from exc
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+
+        if _error_code(payload) == "ERROR_RIGHT_MISSING":
+            raise GlpiRightMissingError(messages.redact(str(payload)))
+
+        if response.status_code not in OK_STATUS_CODES:
+            detail = payload if payload is not None else response.text[:500]
+            raise GlpiError(
+                messages.redact(
+                    messages.HTTP_ERROR.format(
+                        status=response.status_code,
+                        method="POST",
+                        path=path,
+                        detail=detail,
+                    )
+                )
+            )
+        return payload
 
     def create_container_row(self, itemtype: str, payload: dict) -> int:
         return self._create(f"/{itemtype}", payload)

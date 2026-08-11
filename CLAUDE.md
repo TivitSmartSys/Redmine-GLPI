@@ -22,10 +22,24 @@ python main.py --issue 20238 --report report.txt    # dry-run + save the plan re
 python main.py --issue 20172 --apply                # writes, after an interactive "sim" confirmation
 python main.py --issue 20172 --apply --yes          # non-interactive confirmation (pipelines)
 python main.py --issue 20238 --db path\to\other.db  # override the SQLite map (default: migration.db)
+python main.py --issue 16467 --apply --skip-attachments  # no file uploads (still reported)
 
 python audit_coverage.py                # dropdown coverage audit, tracker 14 (read-only)
 python audit_coverage.py --tracker 42
+
+python reset_migration.py --issue 16467              # diagnose only — deletes nothing
+python reset_migration.py --issue 16467 --apply      # forget the migration, after "sim"
+python reset_migration.py --issue 16467 --local-only # clear the SQLite map, leave GLPI alone
 ```
+
+`reset_migration.py` exists because deleting the project in GLPI does **not**
+unblock a re-run: the container-15 row carrying `rdmfield` outlives its project,
+so `check_already_migrated` keeps finding it. It clears both caches — the
+orphaned marker and the `migration_map` rows, whose ids it reads from Redmine
+because the table cannot reconstruct a tree on its own. Those ids include the
+**attachment** ids: a `Document` row is keyed by the attachment, not the issue,
+so listing issue ids alone would leave every document row behind. It refuses while the
+host project is alive; a project in the trash counts as orphaned.
 
 Exit codes: `0` ok, `1` failed/aborted, `2` configuration error.
 
@@ -82,9 +96,48 @@ Module roles:
 ### Write order (fixed by spec 9.2)
 
 `POST /Project` → container-15 row → tasks parent-before-child → per Faturamento
-a `POST /ProjectTask` then its container-26 row. Tasks always set `projects_id`
-to the root project; `projecttasks_id` comes from the parent's entry in
-`plan.glpi_ids`.
+a `POST /ProjectTask` then its container-26 row → **attachments** (step 5, added
+2026-08-10). Tasks always set `projects_id` to the root project;
+`projecttasks_id` comes from the parent's entry in `plan.glpi_ids`.
+
+Attachments come last because every host item must already exist. Step 4 now
+also registers each Faturamento task in `plan.glpi_ids` — it used to keep the id
+only on the item, which left a Faturamento's files unable to find their host
+(and the tree in the report showing no GLPI id for those rows).
+
+### Attachments → GLPI Documents
+
+Opened 2026-08-10; spec section 3 had deferred them ("`Documentos` — poza
+zakresem v1"), so nothing here comes from the spec.
+
+A Redmine attachment becomes a `Document` linked through `Document_Item` to the
+item its issue became: root → the Project, tracker 18/41 → their ProjectTask,
+tracker 15 → its Faturamento ProjectTask (container 26 has no file column, so
+the files hang off the task itself). An attachment on an out-of-scope issue is
+**reported and not migrated** — the same rule as the issue itself.
+
+[transform/attachments.py](transform/attachments.py) plans this and is pure:
+the dry-run takes filenames and sizes from the Redmine metadata and downloads
+nothing. `--skip-attachments` still lists every file, marked as skipped.
+
+Verified live 2026-08-10 (GLPI 11.0.6) by uploading one file to a throwaway
+project/task and purging it: `POST /Document` over the legacy `apirest.php`
+works, and so does a `Document_Item` link whose `itemtype` is `ProjectTask` —
+which had zero rows on the instance, so it was genuinely untested. `document`
+right is 255, `document_max_size` is 50 MB, and `glpi_documenttypes` has 76 rows
+including `.xlsb`/`.msg`/`.eml`/`.ods`, all four of which RDM 16467 needs.
+
+**Documents have a dedup marker; tasks still do not.** `Document.comment` carries
+`rdmattachment:<attachment id>` on its own first line, and
+`find_document_by_marker` is the document twin of `find_by_rdmfield`. GLPI is the
+authority, `migration_map` (itemtype `Document`, `redmine_id` = the *attachment*
+id) is the crash guard. Losing `migration.db` therefore cannot duplicate files,
+which is exactly the exposure containers 16 and 26 still have.
+
+Proven end to end on 2026-08-10 with RDM 16467 → project 1277: 23 files
+uploaded (19 on the project, 3 on the Compras task 14107, 1 on the Faturamento
+task 14109), then `apply_attachments` re-run against an **empty** SQLite map —
+23/23 came back `DEDUP_GLPI`, nothing was uploaded and no link was duplicated.
 
 **The `POST /Project` input carries the container-15 values** — see
 `project_create_payload` in [main.py](main.py). Container 15 is type "dom", so
@@ -113,6 +166,12 @@ a sweep pass over every source custom field no mapping entry consumed. When
 adding a code path that reads source data, add the corresponding records —
 nothing may disappear silently. The same rule covers unreachable children,
 cyclic trees, and ignored relations, which are all carried on `ProjectPlan`.
+
+Attachments obey the same rule through a **parallel** mechanism, not the same
+one: `AttachmentOutcome` and report section 8, with its own arithmetic. They are
+deliberately absent from `ProjectPlan.all_records()` — section 7 proves every
+source *field* landed in exactly one bucket, and a file is not a field. Folding
+them in would break the one number the report exists to guarantee.
 
 ## Hard rules (spec 13 — do not relax these)
 
@@ -153,7 +212,8 @@ Hydro). As tasks: 14, 42, **18** (Atividades) and **41** (Compras). Tracker
 **15** (Faturamento) becomes a ProjectTask of type *Faturamento* on the **root**
 project — never nested under its Redmine parent — carrying a container-26 row;
 it is the only tracker that drives branching logic. Out of scope: **39** CEMIG
-and **40** Subtarefa Cemig (entirely), and attachments (phase two). An
+and **40** Subtarefa Cemig (entirely). Attachments left phase two on 2026-08-10
+and are now migrated as GLPI Documents — see the section above. An
 out-of-scope child is not created in GLPI; it gets an explicit report line, and
 its descendants are skipped too. Scope lives in `config/settings.py`
 (`IN_SCOPE_TASK_TRACKERS`, `IN_SCOPE_ROOT_TRACKERS`, `TRACKER_FATURAMENTO`,
@@ -184,6 +244,34 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
 
 - `include=children` returns only id/tracker/subject — each child needs its own
   GET. The `children` key may be absent entirely; always `.get("children", [])`.
+  The same holds for `attachments`, which until 2026-08-10 was **not requested
+  for descendants at all** (`_expand` used `include=("children",)` and
+  `discover_from_relations` used `include=()`), so every child and every
+  relation-sourced Faturamento looked like it had no files whatsoever.
+- **A multipart upload has to clear this client's own `Content-Type`.**
+  `GlpiClient.__init__` sets `application/json` on the session, and `requests`
+  only computes a multipart boundary when the header is absent — so
+  `_upload()` passes `Content-Type: None` per request. Without it GLPI receives
+  a body it cannot parse and reports an empty upload, which reads like a rights
+  problem and is not one. This is why uploads bypass `_request()`.
+- `searchText[comment]` finds a document marker, but it is the same substring
+  match as everywhere else: `rdmattachment:2931` would match
+  `rdmattachment:29314`. `_has_exact_marker` compares whole **lines**, which is
+  why the marker is always written as the comment's first line on its own.
+- **A GLPI list GET returns only the first 15 rows without an explicit `range`.**
+  Measured 2026-08-10: project 1277 has 19 linked documents and `document_links`
+  read back 15. The four missing rows existed the whole time — the *reader* was
+  truncated. That is why `_search` takes `full_range` (`SEARCH_FETCH_RANGE`);
+  without it `_ensure_link` would post duplicates for anything past the 15th
+  file on a re-run.
+- GLPI refuses a duplicate `Document_Item`, so a re-run must check
+  `document_links` before posting one — otherwise the refusal reads as a real
+  failure. Deleting the GLPI project purges its links but **not** the documents;
+  their markers survive, so a re-migration re-links them instead of re-uploading
+  (55 MB, in the case of 17582).
+- `glpi_documenttypes.ext` holds patterns in some rows, so a plain string miss
+  can be a false alarm. An unknown extension is therefore a report **warning**
+  and the upload is attempted anyway — GLPI stays the authority.
 - Relation direction varies: the partner is the field that is **not** the
   current issue id (`relation_partner_id`). `relates` also links Projeto↔Projeto,
   so only tracker-15 partners may be migrated.

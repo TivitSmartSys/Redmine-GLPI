@@ -140,6 +140,14 @@ the CLI at all.
 - **Losing `migration.db` does not corrupt anything.** The authoritative dedup check
   is the `rdmfield` marker searched in GLPI itself (`check_already_migrated`); the DB
   is a cache. Losing it costs the History tab and resumability, not correctness.
+- The flip side: **deleting the DB does not let you migrate an issue again either.**
+  What refuses a re-run is the `rdmfield` marker on the container-15 row, and that
+  row survives the deletion of its project. To re-test an issue whose GLPI project
+  was removed, use `python reset_migration.py --issue <id> --apply` — it purges the
+  orphaned marker and the matching `migration_map` rows, and refuses if the project
+  still exists. Clearing only one of the two caches is worse than clearing neither:
+  without the DB rows the next run recreates everything, and without the marker but
+  *with* the rows it creates a project whose tasks are all skipped.
 - The service user needs **write access to the DB's directory** (SQLite creates
   journal files alongside), and to the CWD if reports are saved.
 - **Working directory matters**: `default_report_path()` resolves relative to `.`,

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from config.settings import MANDATORY_CONTAINER26_COLUMNS
 from report.reporter import ProjectPlan
+from transform.attachments import summarise as summarise_attachments
 from transform.mapper import Outcome
 
 
@@ -69,6 +70,11 @@ def summarise(plan: ProjectPlan) -> dict:
             if column not in item.result.payload and column not in claimed
         )
     degraded = [item for item in plan.faturamento if not item.written]
+    # Placeholder entries (an issue we could not read) carry no attachment id
+    # and are excluded, exactly as report section 8 excludes them.
+    attachment_counts = summarise_attachments(
+        [item for item in plan.attachments if item.attachment_id]
+    )
 
     return {
         "issue_id": plan.issue_id,
@@ -89,6 +95,16 @@ def summarise(plan: ProjectPlan) -> dict:
         "missing_mandatory": len(missing_mandatory),
         "missing_mandatory_faturamento": len(missing_mandatory_faturamento),
         "never_write": len(plan.never_write),
+        # Attachments have their own counters for the same reason they have
+        # their own report section: they are files, not fields, and folding them
+        # into the field arithmetic would break the one number the report
+        # exists to guarantee.
+        "attachments": attachment_counts["total"],
+        "attachments_pending": attachment_counts["pending"],
+        "attachments_done": attachment_counts["done"],
+        "attachments_skipped": attachment_counts["skipped"],
+        "attachments_failed": attachment_counts["failed"],
+        "attachments_bytes": attachment_counts["bytes"],
         "skipped_children": len(plan.skipped_children),
         "ignored_relations": len(plan.ignored_relations),
         "tree_failures": len(plan.tree_failures),
