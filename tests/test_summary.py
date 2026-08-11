@@ -72,8 +72,8 @@ def build_plan() -> ProjectPlan:
         tasks=[task],
         faturamento=[invoice],
         skipped_children=[
-            SkippedChild(issue_id=19073, tracker_id=41, tracker_name="Compras",
-                         subject="Compra", reason="tracker fora do escopo")
+            SkippedChild(issue_id=19073, tracker_id=39, tracker_name="Projeto CEMIG",
+                         subject="CEMIG", reason="tracker fora do escopo")
         ],
         tree_cycles=[123],
     )

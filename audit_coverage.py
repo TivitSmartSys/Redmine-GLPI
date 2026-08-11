@@ -71,7 +71,7 @@ class CoverageResult:
 def dropdown_entries(mapping: dict) -> list[tuple[str, str]]:
     """(Redmine custom field name, GLPI dictionary itemtype) pairs."""
     pairs: list[tuple[str, str]] = []
-    for section in ("container15", "container25"):
+    for section in ("container15", "container26"):
         for entry in mapping.get(section) or []:
             if entry.get("transform") != "dropdown":
                 continue

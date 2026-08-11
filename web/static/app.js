@@ -238,7 +238,8 @@ function renderSummary(summary) {
 
   const warnings = [
     [summary.unresolved, UI.UI_WARN_UNRESOLVED, "warning"],
-    [summary.missing_mandatory, UI.UI_WARN_MANDATORY, "warning"],
+    [summary.missing_mandatory, UI.UI_WARN_MANDATORY, "critical"],
+    [summary.missing_mandatory_faturamento, UI.UI_WARN_MANDATORY_FATURAMENTO, "warning"],
     [summary.skipped_children, UI.UI_WARN_SKIPPED, "warning"],
     [summary.tree_failures, UI.UI_WARN_FAILURES, "critical"],
     [summary.tree_cycles, UI.UI_WARN_CYCLES, "critical"],

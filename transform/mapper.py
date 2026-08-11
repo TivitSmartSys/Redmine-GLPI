@@ -14,6 +14,12 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
+from config.settings import (
+    PLUGIN_CONTAINER_SECTIONS,
+    PLUGIN_TEXT_MAX_LENGTH,
+    TRACKER_TO_PROJECTTASKTYPE,
+)
+
 DATE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 
 # yesno transform (spec 6.2). Redmine sends text, GLPI expects 0/1.
@@ -24,6 +30,14 @@ YESNO_TRUE = {"sim", "yes", "y", "1", "true"}
 # a reader that the text below came from the migration rather than being typed
 # into GLPI by hand - do not translate or reword it.
 TASK_COMMENT_HEADER = "[Campos migrados do Redmine]"
+
+# Shown on the record of a value that had to be cut to fit a plugin column.
+# Lives here rather than in report.messages because it is the mapper's own
+# explanation of what it did, exactly like the other _transform details.
+TRUNCATED_DETAIL = (
+    "valor cortado para caber na coluna do GLPI: {original} caracteres na "
+    "origem, {limit} gravados"
+)
 
 
 class Outcome(str, Enum):
@@ -43,6 +57,12 @@ class FieldRecord:
     written_value: Any = None
     detail: str = ""
     mandatory: bool = False
+    # The value WAS written, but it did not fit the GLPI column and was cut to
+    # PLUGIN_TEXT_MAX_LENGTH. Deliberately a flag rather than an Outcome: the
+    # field did reach GLPI, so it belongs in the WRITTEN bucket and the
+    # section-7 arithmetic must not change. The report gives it its own block.
+    truncated: bool = False
+    original_length: int = 0
     # Which Redmine issue this field came from. Empty means the root issue;
     # set for tasks and Faturamento so a report line is never ambiguous when
     # the same field name appears on several issues (e.g. "Cliente").
@@ -138,7 +158,7 @@ class Mapper:
         consumed: set[str] = set()
 
         for entry in entries:
-            self._map_entry(issue, entry, cf_index, consumed, result)
+            self._map_entry(issue, entry, cf_index, consumed, result, section)
 
         if sweep:
             self._sweep_unmapped(section, cf_index, consumed, result)
@@ -152,6 +172,11 @@ class Mapper:
         has a counterpart in glpi_projecttasks - containers 15 and 25 attach to
         Project only. Hard-coding a list would therefore lose data the moment a
         new tracker appears, so we iterate over issue.custom_fields generically.
+
+        Tracker 41 (Compras) entering scope on 2026-08-06 is the case in point:
+        its seven fields - Cliente, Data Finalização, Data Cotação, Solicitação
+        Interna, Código Solicitação Interna, Data Aprovação FP&A, Pedido - reach
+        the comment dump through this loop, with no entry added anywhere.
 
         Closed decision (variant b, "comment"): every non-empty field is both
         reported AND dumped into the task's comment under a mandatory header
@@ -190,16 +215,28 @@ class Mapper:
         self._tag_origin(result, issue)
         return result
 
-    def map_faturamento(self, issue: dict) -> MappingResult:
-        """Container-25 columns for one tracker-15 issue (spec 6.5)."""
-        result = self.map_section(issue, "container25", sweep=False)
+    def map_faturamento(self, issue: dict) -> tuple[MappingResult, MappingResult]:
+        """One tracker-15 issue -> a ProjectTask plus its container-26 row.
+
+        CHANGED 2026-08-06 (spec 6.5). A Faturamento used to be a single
+        container-25 row on the Project. GLPI now models it as a ProjectTask of
+        type Faturamento carrying a container-26 row, so this returns the same
+        (core, container) pair map_project already returns - the shapes stay
+        parallel on purpose.
+
+        The sweep runs once, on the container pass, because both sections draw
+        from the same pool of custom fields.
+        """
+        core = self.map_section(issue, "task_core", sweep=False)
+        container = self.map_section(issue, "container26", sweep=False)
+
         cf_index = custom_field_index(issue)
-        consumed = self._consumed_names(("container25",))
-        # scope 'faturamento' in mapping.yml declares Cliente,
-        # Responsável Cliente NF and Conformidade1.
-        self._sweep_unmapped("faturamento", cf_index, consumed, result)
-        self._tag_origin(result, issue)
-        return result
+        consumed = self._consumed_names(("task_core", "container26"))
+        # scope 'faturamento' in mapping.yml declares Cliente and Conformidade1.
+        self._sweep_unmapped("faturamento", cf_index, consumed, container)
+        self._tag_origin(core, issue)
+        self._tag_origin(container, issue)
+        return core, container
 
     def map_project(self, issue: dict) -> tuple[MappingResult, MappingResult]:
         """Core project columns and container-15 columns.
@@ -245,6 +282,7 @@ class Mapper:
         cf_index: dict[str, dict],
         consumed: set[str],
         result: MappingResult,
+        section: str = "",
     ) -> None:
         column = entry["column"]
         transform = entry.get("transform", "text")
@@ -284,6 +322,28 @@ class Mapper:
             return
 
         value, outcome, detail = self._transform(entry, transform, raw, label)
+
+        # A plugin "text" column is a VARCHAR(255). Over the limit, GLPI commits
+        # the project and THEN fails on the plugin's own INSERT, leaving a
+        # project with no container row and therefore no rdmfield marker - see
+        # PLUGIN_TEXT_MAX_LENGTH. Cutting the value here is what keeps the
+        # project writable at all; the loss is reported, never silent.
+        truncated = False
+        original_length = 0
+        if (
+            outcome is Outcome.WRITTEN
+            and transform == "text"
+            and section in PLUGIN_CONTAINER_SECTIONS
+            and isinstance(value, str)
+            and len(value) > PLUGIN_TEXT_MAX_LENGTH
+        ):
+            original_length = len(value)
+            value = value[:PLUGIN_TEXT_MAX_LENGTH]
+            truncated = True
+            detail = TRUNCATED_DETAIL.format(
+                original=original_length, limit=PLUGIN_TEXT_MAX_LENGTH
+            )
+
         if outcome is Outcome.WRITTEN:
             result.payload[column] = value
         result.records.append(
@@ -295,6 +355,8 @@ class Mapper:
                 written_value=value if outcome is Outcome.WRITTEN else None,
                 detail=detail,
                 mandatory=mandatory,
+                truncated=truncated,
+                original_length=original_length,
             )
         )
 
@@ -340,6 +402,24 @@ class Mapper:
                 else:
                     detail = f"usuário RDM {raw} não está no mapa de usuários"
                 return None, Outcome.UNRESOLVED, detail
+            return resolved, Outcome.WRITTEN, ""
+
+        if transform == "tasktype":
+            # Redmine tracker id -> glpi_projecttasktypes. Only the trackers in
+            # TRACKER_TO_PROJECTTASKTYPE get a type; 14 and 42 deliberately get
+            # none, so NO_COUNTERPART (not UNRESOLVED) is the honest outcome -
+            # nothing failed, there simply is no type for a plain task.
+            try:
+                tracker_id = int(float(raw))
+            except (TypeError, ValueError):
+                return None, Outcome.UNRESOLVED, f"tracker inválido: {raw!r}"
+            resolved = TRACKER_TO_PROJECTTASKTYPE.get(tracker_id)
+            if resolved is None:
+                return (
+                    None,
+                    Outcome.NO_COUNTERPART,
+                    f"tracker {tracker_id} não possui tipo de tarefa no GLPI",
+                )
             return resolved, Outcome.WRITTEN, ""
 
         if transform == "dropdown":
@@ -395,9 +475,16 @@ class Mapper:
     def never_write_records(self) -> list[FieldRecord]:
         """Declared columns that are intentionally left untouched (spec 6.4)."""
         detail_by_reason = {
-            "inactive": "coluna inativa no GLPI (is_active: 0) — gravar nela é erro",
+            # Verified in plugin source 1.24.3 (2026-08-06): a write to an
+            # inactive column is NOT rejected, it just becomes invisible in the
+            # GLPI form. The wording used to claim it was an error.
+            "inactive": "coluna inativa no GLPI (is_active: 0) — o valor não apareceria no formulário",
             "manual": "definido manualmente no GLPI após a migração",
             "skipped": "prioridade é ignorada em toda a migração",
+            "redundant": (
+                "mesma informação já gravada no campo Estado da tarefa "
+                "(projectstates_id)"
+            ),
         }
         records = []
         for item in self._mapping.get("never_write") or []:

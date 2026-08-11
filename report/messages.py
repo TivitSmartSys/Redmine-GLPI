@@ -85,6 +85,23 @@ PREFLIGHT_FIELDS_CHECK_FAILED = (
     "  Detalhe: {detail}"
 )
 
+PREFLIGHT_PROJECTTASK_RIGHT_OK = (
+    "[OK] Permissão de gravação nas tarefas de projeto confirmada."
+)
+
+# AVISO, não FALHA: sem esta permissão apenas a linha do container 26 é
+# recusada. A tarefa de Faturamento é criada normalmente e a migração continua
+# — um projeto sem Faturamento não é afetado.
+PREFLIGHT_PROJECTTASK_RIGHT_MISSING = (
+    "[AVISO] O perfil da API não tem permissão de ALTERAR em Tarefas de projeto.\n"
+    "  As linhas do container 26 (aba Faturamento) serão RECUSADAS pelo GLPI: as "
+    "tarefas de Faturamento\n"
+    "  são criadas, mas a aba fica vazia e os valores só existem neste relatório.\n"
+    "  Conceda a permissão em: Administração → Perfis → [perfil da API] → "
+    "Tarefas de projeto → Alterar.\n"
+    "  Projetos sem Faturamento não são afetados — a migração continua."
+)
+
 PREFLIGHT_DROPDOWNS_LOADING = "[..] Carregando os dicionários de listas ({count} no total)…"
 
 PREFLIGHT_DROPDOWN_OK = "     [OK] {itemtype}: {count} valor(es)."
@@ -105,6 +122,21 @@ PREFLIGHT_DROPDOWNS_EMPTY_SUMMARY = (
 PREFLIGHT_DROPDOWN_FAILED = (
     "     [AVISO] {itemtype}: não foi possível carregar o dicionário "
     "({detail}). Os campos que dependem dele serão ignorados com aviso."
+)
+
+# Documents. Warnings only, never a stop: a project whose files fail is still a
+# correct project, exactly like the container-26 case above.
+PREFLIGHT_DOCUMENT_RIGHT_MISSING = (
+    "[AVISO] O perfil da API não tem permissão de CRIAR em Documentos.\n"
+    "  Os anexos NÃO serão enviados ao GLPI; eles continuam listados na seção 8 "
+    "do relatório.\n"
+    "  Conceda a permissão em: Administração → Perfis → [perfil da API] → "
+    "Documentos → Criar."
+)
+PREFLIGHT_DOCUMENT_TYPES_OK = "[OK] Tipos de documento aceitos pelo GLPI: {count}."
+PREFLIGHT_DOCUMENT_TYPES_FAILED = (
+    "[AVISO] Não foi possível ler glpi_documenttypes ({detail}). O relatório não "
+    "poderá avisar sobre extensões recusadas; o envio continua normalmente."
 )
 
 PREFLIGHT_REDMINE_OK = "[OK] Redmine respondeu (issue {issue_id} acessível)."
@@ -146,6 +178,14 @@ CLI_HELP_YES = (
 )
 CLI_HELP_DB = "Caminho do banco SQLite com o mapa de migração."
 CLI_HELP_REPORT = "Caminho do arquivo onde salvar o relatório."
+CLI_HELP_SKIP_ATTACHMENTS = (
+    "Não migra os anexos (Documentos). Eles continuam listados no relatório, "
+    "marcados como ignorados."
+)
+CLI_HELP_SKIP_NOTES = (
+    "Não migra as notas (aba Notas do GLPI). Elas continuam listadas no "
+    "relatório, marcadas como ignoradas."
+)
 
 CLI_MODE_DRY_RUN = (
     "MODO SIMULAÇÃO (dry-run): nada será gravado no GLPI. "
@@ -170,11 +210,15 @@ REPORT_SECTION_4 = "4. REFERÊNCIAS NÃO RESOLVIDAS"
 REPORT_SECTION_5 = "5. CAMPOS OBRIGATÓRIOS DO GLPI SEM DADOS"
 REPORT_SECTION_6 = "6. COLUNAS NUNCA GRAVADAS (por decisão)"
 REPORT_SECTION_7 = "7. CONFERÊNCIA DE INTEGRIDADE"
+REPORT_SECTION_8 = "8. ANEXOS (Documentos do GLPI)"
+REPORT_SECTION_9 = "9. NOTAS (aba Notas do GLPI)"
 
 REPORT_PROJECT_LINE = 'Projeto GLPI: "{name}"'
 REPORT_ORIGIN_LINE = "  Origem: RDM {issue_id} (tracker {tracker_id} {tracker_name})"
 REPORT_TASKS_LINE = "  Tarefas a criar: {count}"
-REPORT_FATURAMENTO_LINE = "  Linhas de Faturamento (container 25): {count}"
+REPORT_FATURAMENTO_LINE = (
+    "  Faturamentos (tarefa tipo Faturamento + container 26): {count}"
+)
 REPORT_CORE_HEADER = "  Campos do projeto (glpi_projects):"
 REPORT_CONTAINER15_HEADER = "  Campos adicionais (container 15):"
 REPORT_NOTHING = "  (nenhum)"
@@ -192,8 +236,25 @@ REPORT_SECTION_4_INTRO = (
     "O campo foi ignorado — NENHUM valor foi inventado."
 )
 REPORT_SECTION_5_INTRO = (
-    "  O GLPI marca estas colunas como obrigatórias. Sem dados, a gravação "
-    "pode ser recusada."
+    "  O GLPI marca estas colunas como obrigatórias. O efeito de deixá-las "
+    "vazias depende do container — veja cada bloco abaixo."
+)
+# The two blocks behave differently and must never be merged. Container 15
+# travels inside POST /Project, where the plugin validates it: a missing value
+# REFUSES the project (the ERROR_GLPI_ADD failure of 2026-08-04). Container 26
+# is written straight to the container itemtype over REST, a path that never
+# reaches validateValues(), so a missing value only leaves the row incomplete.
+REPORT_SECTION_5_BLOCKING = (
+    "  Container 15 (projeto) — a gravação do PROJETO é recusada sem estes dados:"
+)
+REPORT_NO_SOURCE = "(sem origem no Redmine)"
+REPORT_MANDATORY_UNMAPPED = (
+    "coluna obrigatória sem mapeamento — preencher à mão no GLPI"
+)
+REPORT_SECTION_5_NON_BLOCKING = (
+    "  Container 26 (faturamento) — a linha é gravada mesmo assim, porém "
+    "incompleta. O próprio GLPI recusará salvar a aba à mão até alguém "
+    "preencher:"
 )
 
 REPORT_INTEGRITY_INTRO = (
@@ -214,7 +275,8 @@ REPORT_TREE_HEADER = "  Árvore (Redmine → GLPI):"
 REPORT_TREE_PROJECT = "    #{issue_id} [{tracker}] {subject} → Projeto{glpi}"
 REPORT_TREE_TASK = "    #{issue_id} [{tracker}] {subject} → Tarefa{glpi}"
 REPORT_TREE_FATURAMENTO = (
-    "    #{issue_id} [{tracker}] {subject} → linha de Faturamento (container 25)"
+    "    #{issue_id} [{tracker}] {subject} → Tarefa tipo Faturamento "
+    "+ container 26"
 )
 REPORT_TREE_SKIPPED = "    #{issue_id} [{tracker}] {subject} → IGNORADO ({reason})"
 
@@ -228,16 +290,168 @@ REPORT_SKIPPED_LINE = 'IGNORADO subtarefa {tracker} {issue_id} "{subject}" — {
 REPORT_SECTION_RELATIONS = "RELAÇÕES DO REDMINE NÃO MIGRADAS"
 REPORT_SECTION_RELATIONS_INTRO = (
     "  Relações horizontais (relates) não fazem parte da hierarquia e nunca "
-    "viram tarefas.\n  Somente parceiros do tracker 15 (Faturamento) geram "
-    "linhas no container 25."
+    "viram tarefas comuns.\n  Somente parceiros do tracker 15 (Faturamento) "
+    "geram uma tarefa tipo Faturamento com linha no container 26."
 )
 REPORT_RELATION_LINE = (
     '  - #{issue_id} [{tracker}] "{subject}" — relação {relation_type}, '
     "não migrada"
 )
 
-REPORT_SECTION_FATURAMENTO = "FATURAMENTO (container 25)"
+# ---------------------------------------------------------------------------
+# Report section 8 - attachments.
+#
+# Section 8 keeps its OWN arithmetic. Section 7 proves that every source FIELD
+# landed in exactly one bucket; files are not fields, and folding them into that
+# total would break the one number the report exists to guarantee.
+# ---------------------------------------------------------------------------
+REPORT_SECTION_8_INTRO = (
+    "  Cada anexo do Redmine vira um Documento do GLPI na aba Documentos do "
+    "item\n  correspondente. O que veio junto com uma nota é vinculado TAMBÉM à "
+    "nota,\n  sem duplicar o arquivo — um Documento, dois vínculos.\n"
+    "  A simulação NÃO baixa nenhum arquivo — nomes e tamanhos vêm dos "
+    "metadados da API."
+)
+REPORT_ATTACHMENT_ALSO_NOTE = "        também vinculado à nota {journal_id}"
+REPORT_ATTACHMENT_HOST = "  {label} — {count} arquivo(s), {size}"
+REPORT_ATTACHMENT_LINE = "    - {filename}  ({size}) {status}"
+REPORT_ATTACHMENT_DETAIL = "        {detail}"
+REPORT_ATTACHMENT_WARNING = "        [aviso] {warning}"
+REPORT_ATTACHMENT_NONE = "  (nenhum anexo encontrado no Redmine)"
+REPORT_ATTACHMENT_SKIPPED_HEADER = "  NÃO MIGRADOS:"
+
+# One label per AttachmentOutcome, in the report's own language.
+REPORT_ATTACHMENT_STATUS = {
+    "planned": "[a enviar]",
+    "uploaded": "[enviado — Documento {glpi_id}]",
+    "dedup_glpi": "[já existe no GLPI — Documento {glpi_id}]",
+    "dedup_local": "[já registrado no mapa local]",
+    "no_host": "[NÃO MIGRADO]",
+    "too_big": "[NÃO MIGRADO — arquivo grande demais]",
+    "skipped_by_flag": "[IGNORADO — --skip-attachments]",
+    "failed_download": "[FALHA ao baixar do Redmine]",
+    "failed_upload": "[FALHA ao enviar ao GLPI]",
+    "failed_link": "[FALHA ao vincular ao item]",
+}
+
+REPORT_ATTACHMENT_HOST_MISSING = (
+    "o item de destino não foi criado no GLPI (veja os avisos acima)"
+)
+# The extra link to the file's own note failed. The document itself is already
+# on the project, so this is a lost convenience, never a lost file.
+APPLY_ATTACHMENT_NOTE_LINK_FAILED = (
+    "[AVISO] O anexo {attachment_id} foi migrado, mas não pôde ser vinculado "
+    "também à nota {journal_id}: {detail}\n"
+    "  O arquivo está na aba Documentos do item."
+)
+
+# Written into Document.comment, so this text lands in the GLPI database and is
+# read by people working in GLPI - PT-BR like the rest of the user-facing text.
+# The dedup marker is prepended separately and always stays the first line.
+DOCUMENT_ORIGIN = "Migrado do Redmine — issue {issue_id}, anexo {attachment_id}"
+DOCUMENT_DESCRIPTION = "Descrição no Redmine: {text}"
+DOCUMENT_AUTHOR = "Autor: {author} · {created_on}"
+
+REPORT_ATTACHMENT_TOTALS = "  Anexos encontrados no Redmine : {total}"
+REPORT_ATTACHMENT_PENDING = "    a enviar                    : {count}"
+REPORT_ATTACHMENT_DONE = "    já no GLPI                  : {count}"
+REPORT_ATTACHMENT_SKIPPED = "    não migrados                : {count}"
+REPORT_ATTACHMENT_FAILED = "    falhas                      : {count}"
+REPORT_ATTACHMENT_OK = (
+    "  [OK] {parts} = {total} — nenhum anexo foi descartado em silêncio."
+)
+REPORT_ATTACHMENT_FAIL = (
+    "  [ERRO] A soma das categorias ({parts}) não confere com o total ({total}). "
+    "Isto é um defeito do migrador."
+)
+
+# ---------------------------------------------------------------------------
+# Section 9 - notes (Redmine journals -> GLPI Notepad)
+#
+# Parallel to section 8, never merged with it. Section 7 counts source FIELDS,
+# section 8 counts FILES and section 9 counts NOTES; each closes its own
+# arithmetic, and mixing any two would break the guarantee the report exists for.
+# ---------------------------------------------------------------------------
+REPORT_SECTION_9_INTRO = (
+    "  Cada nota de texto do Redmine vira uma linha na aba Notas do item\n"
+    "  correspondente. O que não tem texto é histórico, não nota: mudança de\n"
+    "  status, de campo, ou um arquivo enviado sem comentário. Essas entradas\n"
+    "  não geram nota e aparecem apenas no total, agrupadas por item — os\n"
+    "  arquivos delas continuam indo para a aba Documentos (seção 8)."
+)
+REPORT_NOTE_HOST = "  {label} — {count} nota(s) de texto"
+REPORT_NOTE_HOST_NO_TEXT = "  {label} — sem notas de texto"
+REPORT_NOTE_LINE = "    - nota {journal_id} · {author} · {created_on} {status}"
+REPORT_NOTE_TEXT = "        {text}"
+REPORT_NOTE_PRIVATE_TAG = "        [nota privada no Redmine]"
+REPORT_NOTE_FILES = "        arquivos desta nota: {names}"
+REPORT_NOTE_DETAIL = "        {detail}"
+REPORT_NOTE_HISTORY_ONLY = (
+    "    ({count} entrada(s) de histórico sem texto — nada a migrar)"
+)
+REPORT_NOTE_NONE = "  (nenhuma nota de texto encontrada no Redmine)"
+REPORT_NOTE_SKIPPED_HEADER = "  NÃO MIGRADAS:"
+
+# One label per NoteOutcome, in the report's own language.
+REPORT_NOTE_STATUS = {
+    "planned": "[a gravar]",
+    "written": "[gravada — Nota {glpi_id}]",
+    "dedup_glpi": "[já existe no GLPI — Nota {glpi_id}]",
+    "dedup_local": "[já registrada no mapa local]",
+    "no_host": "[NÃO MIGRADA]",
+    "history_only": "[sem texto]",
+    "skipped_by_flag": "[IGNORADA — --skip-notes]",
+    "failed_write": "[FALHA ao gravar no GLPI]",
+}
+
+REPORT_NOTE_HOST_MISSING = (
+    "o item de destino não foi criado no GLPI (veja os avisos acima)"
+)
+
+# Written into Notepad.content, so this text lands in the GLPI database and is
+# read by people working in GLPI - PT-BR like the rest of the user-facing text.
+# The dedup marker is prepended separately and always stays the first line.
+NOTE_ORIGIN = "Migrado do Redmine — issue {issue_id}, nota {journal_id}"
+NOTE_AUTHOR = "Autor: {author} · {created_on}"
+NOTE_PRIVATE = "[NOTA PRIVADA no Redmine]"
+NOTE_FILES = "Arquivos desta nota: {names}"
+
+REPORT_NOTE_TOTALS = "  Notas encontradas no Redmine  : {total}"
+REPORT_NOTE_PENDING = "    a gravar                    : {count}"
+REPORT_NOTE_DONE = "    já no GLPI                  : {count}"
+REPORT_NOTE_SKIPPED = "    não migradas                : {count}"
+REPORT_NOTE_FAILED = "    falhas                      : {count}"
+REPORT_NOTE_OK = (
+    "  [OK] {parts} = {total} — nenhuma nota foi descartada em silêncio."
+)
+REPORT_NOTE_FAIL = (
+    "  [ERRO] A soma das categorias ({parts}) não confere com o total ({total}). "
+    "Isto é um defeito do migrador."
+)
+
+# Truncated values. An unnumbered block, like the two below it: the value DID
+# reach GLPI, so it stays in the WRITTEN bucket of section 7 and does not get a
+# section number of its own. It still needs to be impossible to miss.
+REPORT_SECTION_TRUNCATED = "CAMPOS CORTADOS PARA CABER NO GLPI"
+REPORT_TRUNCATED_INTRO = (
+    "  As colunas de texto do plugin Fields são VARCHAR(255). Um valor maior faz\n"
+    "  o GLPI criar o projeto e recusar a linha do container logo depois — o que\n"
+    "  deixaria um projeto sem marcador rdmfield. Por isso o valor é cortado.\n"
+    "  O texto completo continua no Redmine."
+)
+REPORT_TRUNCATED_LINE = (
+    "  - {column} (origem: {source}) — {original} caracteres cortados para {limit}"
+)
+REPORT_TRUNCATED_KEPT = "      gravado: {value}"
+REPORT_TRUNCATED_LOST = "      perdido: {value}"
+REPORT_TRUNCATED_NONE = "  (nenhum)"
+
+REPORT_SECTION_FATURAMENTO = (
+    "FATURAMENTO (tarefa tipo Faturamento + container 26)"
+)
 REPORT_FATURAMENTO_ITEM = '  Faturamento RDM {issue_id} — "{subject}"'
+REPORT_FATURAMENTO_TASK_PAYLOAD = "Tarefa (glpi_projecttasks):"
+REPORT_FATURAMENTO_ROW_PAYLOAD = "Linha do container 26:"
 
 REPORT_SECTION_TASKS = "TAREFAS (glpi_projecttasks)"
 REPORT_TASK_ITEM = '  Tarefa RDM {issue_id} — "{subject}"'
@@ -273,20 +487,161 @@ APPLY_HEADER = "== Gravando no GLPI =="
 APPLY_PROJECT_CREATED = "[OK] Projeto criado: GLPI {glpi_id} (RDM {issue_id})."
 APPLY_CONTAINER15_WRITTEN = "[OK] Campos adicionais gravados (container 15, linha {row_id})."
 APPLY_TASK_CREATED = "[OK] Tarefa criada: GLPI {glpi_id} (RDM {issue_id})."
+APPLY_FATURAMENTO_TASK_CREATED = (
+    "[OK] Tarefa de Faturamento criada: GLPI {glpi_id} (RDM {issue_id})."
+)
 APPLY_FATURAMENTO_CREATED = (
-    "[OK] Linha de Faturamento criada: GLPI {row_id} (RDM {issue_id})."
+    "[OK] Linha de Faturamento criada: container 26 {row_id} na tarefa "
+    "{task_id} (RDM {issue_id})."
 )
 APPLY_FATURAMENTO_DEGRADED = (
-    "[AVISO] O GLPI recusou linhas adicionais de Faturamento neste projeto. "
-    "A primeira foi gravada; as demais estão no relatório com todos os valores.\n"
+    "[AVISO] A tarefa de Faturamento RDM {issue_id} foi criada (GLPI "
+    "{task_id}), mas o GLPI recusou a linha do container 26. Os valores estão "
+    "no relatório e podem ser preenchidos à mão na aba Faturamento.\n"
     "  Detalhe: {detail}"
 )
+APPLY_ATTACHMENTS_HEADER = "-- Anexos: {count} arquivo(s) a enviar --"
+APPLY_ATTACHMENT_UPLOADED = (
+    "[OK] Anexo {attachment_id} de RDM {issue_id} enviado: Documento {glpi_id} "
+    "→ {itemtype} {items_id} ({filename})."
+)
+APPLY_ATTACHMENT_DEDUP = (
+    "[--] Anexo {attachment_id} de RDM {issue_id} já existe no GLPI "
+    "(Documento {glpi_id}); nada foi enviado."
+)
+# Degradation, never an abort - the same rule as the container-26 row: the item
+# is already written and a half-migrated project is worse than a missing file.
+APPLY_ATTACHMENT_FAILED = (
+    "[AVISO] Anexo {attachment_id} de RDM {issue_id} ({filename}) não foi "
+    "migrado: {detail}\n"
+    "  O item no GLPI foi mantido; o arquivo continua no Redmine."
+)
+APPLY_ATTACHMENT_NO_HOST = (
+    "[AVISO] Anexo {attachment_id} de RDM {issue_id} ({filename}) não tem item "
+    "de destino no GLPI; não foi migrado."
+)
+
+APPLY_NOTES_HEADER = "-- Notas: {count} nota(s) a gravar --"
+APPLY_NOTE_WRITTEN = (
+    "[OK] Nota {journal_id} de RDM {issue_id} gravada: Nota {glpi_id} "
+    "→ {itemtype} {items_id}."
+)
+APPLY_NOTE_DEDUP = (
+    "[--] Nota {journal_id} de RDM {issue_id} já existe no GLPI "
+    "(Nota {glpi_id}); nada foi gravado."
+)
+# Degradation, never an abort - the same rule the attachments follow: the
+# project, its tasks and its files are already written by the time this runs.
+APPLY_NOTE_FAILED = (
+    "[AVISO] Nota {journal_id} de RDM {issue_id} não foi migrada: {detail}\n"
+    "  O item no GLPI foi mantido; a nota continua no Redmine."
+)
+APPLY_NOTE_NO_HOST = (
+    "[AVISO] Nota {journal_id} de RDM {issue_id} não tem item de destino no "
+    "GLPI; não foi migrada."
+)
+
 APPLY_STEP_FAILED = "[FALHA] {step}: {detail}"
 APPLY_DONE = "== Migração concluída. =="
 
 REPORT_SAVED = "Relatório salvo em: {path}"
 REPORT_NOTHING_WRITTEN = (
     "Nada foi gravado no GLPI. Use --apply para executar a migração."
+)
+
+# ---------------------------------------------------------------------------
+# Reset de uma migração (reset_migration.py)
+# ---------------------------------------------------------------------------
+RESET_DESCRIPTION = (
+    "Esquece uma migração já feita para que a mesma issue possa ser migrada de "
+    "novo: apaga o marcador rdmfield órfão no GLPI e as linhas do mapa local. "
+    "Por padrão apenas diagnostica, sem apagar nada."
+)
+
+CLI_HELP_RESET_ISSUE = "Número da issue raiz no Redmine cuja migração será esquecida."
+CLI_HELP_RESET_APPLY = (
+    "Apaga de verdade. Sem esta opção o comando só mostra o que seria apagado."
+)
+CLI_HELP_RESET_YES = (
+    "Confirma sem perguntar. Só tem efeito junto com --apply."
+)
+CLI_HELP_RESET_LOCAL_ONLY = (
+    "Limpa somente o mapa local (SQLite). O GLPI não é consultado nem alterado; "
+    "o marcador rdmfield continua bloqueando a migração."
+)
+
+RESET_HEADER = "== Reset da migração — RDM {issue_id} =="
+RESET_MODE_DRY = (
+    "MODO DIAGNÓSTICO: nada será apagado. Use --apply para apagar de verdade."
+)
+RESET_MODE_APPLY = "MODO APAGAR (--apply): o marcador e o mapa local serão apagados."
+RESET_MODE_LOCAL_ONLY = "Somente mapa local (--local-only): o GLPI não será tocado."
+
+RESET_TREE_SCANNED = (
+    "Árvore lida no Redmine: {count} issue(s) — raiz, tarefas, Faturamentos e "
+    "itens fora de escopo."
+)
+RESET_TREE_FAILED = (
+    "Não foi possível ler a árvore da issue {issue_id} no Redmine. Nada foi "
+    "alterado.\n  Detalhe: {detail}"
+)
+
+RESET_LOCAL_HEADER = "-- Mapa local ({path}) --"
+RESET_LOCAL_ROW = "  RDM {issue_id:<7} {itemtype:<38} GLPI {glpi_id:<7} {migrated_at}"
+RESET_LOCAL_EMPTY = "  (nenhuma linha para esta árvore)"
+RESET_LOCAL_COUNT = "  Total: {count} linha(s) a apagar."
+
+RESET_MARKER_HEADER = "-- Marcador rdmfield no GLPI (container 15) --"
+RESET_MARKER_NONE = (
+    "  (nenhum marcador para esta issue — o GLPI já não bloqueia a migração)"
+)
+RESET_MARKER_ORPHAN = (
+    "  [ÓRFÃO] linha {row_id} aponta para o projeto {project_id}, que não existe "
+    "mais. Pode ser apagada."
+)
+RESET_MARKER_TRASHED = (
+    "  [NA LIXEIRA] linha {row_id} aponta para o projeto {project_id}, que está "
+    "na lixeira do GLPI. Será apagada — se o projeto for restaurado depois, "
+    "ficará sem marcador e poderá ser duplicado."
+)
+RESET_MARKER_ACTIVE = (
+    "  [ATIVO] linha {row_id} aponta para o projeto {project_id}, que continua "
+    "existindo no GLPI."
+)
+RESET_REFUSED_ACTIVE = (
+    "O projeto ainda existe no GLPI, então o marcador não é órfão e nada foi "
+    "apagado.\n"
+    "Apague primeiro o projeto no GLPI (ou use --local-only para limpar apenas "
+    "o mapa local) e execute este comando de novo."
+)
+
+RESET_CONFIRM_PROMPT = (
+    "Confirma apagar o marcador no GLPI e as linhas do mapa local? "
+    "Digite 'sim' para continuar: "
+)
+RESET_CANCELLED = "Reset cancelado. Nada foi apagado."
+RESET_NOTHING_TO_DO = (
+    "Nada a apagar: não há marcador no GLPI nem linhas no mapa local para esta "
+    "issue."
+)
+
+RESET_MARKER_DELETED = "[OK] Marcador apagado: {itemtype} linha {row_id}."
+RESET_MARKER_DELETE_FAILED = (
+    "[FALHA] O GLPI recusou apagar a linha {row_id}: {detail}\n"
+    "  O mapa local NÃO foi alterado."
+)
+RESET_LOCAL_DELETED = "[OK] Mapa local: {count} linha(s) apagada(s)."
+RESET_LOCAL_DELETE_FAILED = (
+    "[FALHA] O marcador no GLPI já foi apagado, mas o mapa local não: {detail}\n"
+    "  Execute de novo com --local-only para terminar a limpeza."
+)
+
+RESET_VERIFY_OK = (
+    "== Reset concluído. A issue {issue_id} pode ser migrada de novo. =="
+)
+RESET_VERIFY_FAILED = (
+    "[FALHA] Depois de apagar, o marcador rdmfield da issue {issue_id} ainda é "
+    "encontrado no GLPI. A migração continuará bloqueada."
 )
 
 # ---------------------------------------------------------------------------
@@ -351,7 +706,12 @@ UI_CARD_IGNORED = "Campos ignorados"
 UI_CARD_UNRESOLVED = "Não resolvidos"
 
 UI_WARN_UNRESOLVED = "{count} referência(s) não resolvida(s)"
-UI_WARN_MANDATORY = "{count} campo(s) obrigatório(s) sem dados"
+# "critical" in the UI: these refuse the POST /Project outright.
+UI_WARN_MANDATORY = "{count} campo(s) obrigatório(s) sem dados — bloqueia a gravação"
+# "warning": the container-26 row is written anyway, just incomplete.
+UI_WARN_MANDATORY_FATURAMENTO = (
+    "{count} campo(s) obrigatório(s) do Faturamento sem dados"
+)
 UI_WARN_SKIPPED = "{count} subtarefa(s) ignorada(s)"
 UI_WARN_FAILURES = "{count} filho(s) ilegível(is) no Redmine"
 UI_WARN_CYCLES = "{count} ciclo(s) na árvore"

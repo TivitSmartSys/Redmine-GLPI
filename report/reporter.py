@@ -12,12 +12,17 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from config.settings import MANDATORY_CONTAINER26_COLUMNS
 from report import messages
 from transform.mapper import FieldRecord, MappingResult, Outcome
 
 WIDTH = 80
 RULE = "=" * WIDTH
 THIN = "-" * WIDTH
+
+# How much of a note's text the report previews on its line. Long enough to
+# recognise the note, short enough that a project with 14 of them stays readable.
+NOTE_EXCERPT_CHARS = 100
 
 
 @dataclass
@@ -37,11 +42,19 @@ class PlannedTask:
 
 @dataclass
 class PlannedFaturamento:
-    """One tracker-15 issue that becomes a container-25 row."""
+    """One tracker-15 issue that becomes a typed ProjectTask + container-26 row.
+
+    Two payloads, two GLPI ids: `core`/`glpi_task_id` for the ProjectTask of
+    type Faturamento, `result`/`glpi_id` for the container-26 row hanging off
+    it. Before 2026-08-06 this was a single container-25 row on the Project,
+    which is why the container payload keeps the plain name `result`.
+    """
 
     issue: dict
-    result: MappingResult
+    result: MappingResult          # container-26 columns
+    core: MappingResult | None = None  # ProjectTask columns
     origin: str = "relation"  # 'relation' | 'child'
+    glpi_task_id: int | None = None
     glpi_id: int | None = None
     written: bool = True  # False when degraded to report-only
 
@@ -70,6 +83,16 @@ class ProjectPlan:
     tasks: list[PlannedTask] = field(default_factory=list)
     faturamento: list[PlannedFaturamento] = field(default_factory=list)
     skipped_children: list[SkippedChild] = field(default_factory=list)
+    # PlannedAttachment list from transform.attachments. Deliberately NOT part
+    # of all_records(): section 7 proves that every source FIELD landed in one
+    # bucket, and a file is not a field. Attachments close their own arithmetic
+    # in section 8.
+    attachments: list = field(default_factory=list)
+    # PlannedNote list from transform.notes. Out of all_records() for the same
+    # reason as `attachments`, and named `notes_planned` because `notes` below
+    # is already taken by the apply-time message log - a clash there would
+    # silently swallow the tail of the report.
+    notes_planned: list = field(default_factory=list)
     ignored_relations: list = field(default_factory=list)
     tree_failures: list = field(default_factory=list)
     tree_cycles: list = field(default_factory=list)
@@ -80,6 +103,11 @@ class ProjectPlan:
     # redmine_id -> GLPI id, filled during --apply so the report can show the
     # Redmine -> GLPI correspondence required by spec section 10.
     glpi_ids: dict = field(default_factory=dict)
+    # Redmine JOURNAL id -> GLPI Notepad id, filled by step 5 so step 6 can hang
+    # a file off the note it arrived with. Deliberately a separate map: glpi_ids
+    # is keyed by ISSUE id and journals are numbered independently, so one dict
+    # would let a journal id silently answer a lookup for an issue.
+    glpi_notepad_ids: dict = field(default_factory=dict)
 
     @property
     def issue_id(self) -> int:
@@ -94,6 +122,8 @@ class ProjectPlan:
         for task in self.tasks:
             records.extend(task.result.records)
         for item in self.faturamento:
+            if item.core is not None:
+                records.extend(item.core.records)
             records.extend(item.result.records)
         return records
 
@@ -212,7 +242,16 @@ class Reporter:
                         subject=item.issue.get("subject") or "",
                     )
                 )
-                self._payload_lines(item.result, indent=4)
+                # Two writes per Faturamento since 2026-08-06: the task first,
+                # then the container-26 row that hangs off it. Rendered as two
+                # blocks so the reader sees which payload goes where.
+                if item.core is not None:
+                    self._add("    " + messages.REPORT_FATURAMENTO_TASK_PAYLOAD)
+                    self._payload_lines(item.core, indent=6)
+                    self._add("    " + messages.REPORT_FATURAMENTO_ROW_PAYLOAD)
+                    self._payload_lines(item.result, indent=6)
+                else:
+                    self._payload_lines(item.result, indent=4)
 
     def _payload_lines(self, result: MappingResult, indent: int = 4) -> None:
         written = result.by_outcome(Outcome.WRITTEN)
@@ -280,19 +319,100 @@ class Reporter:
         )
 
     def _section_mandatory(self) -> None:
+        """Missing mandatory columns, split by whether they block the write.
+
+        Container 15 refuses the project; container 26 only degrades the row.
+        Reporting them under one heading would teach the wrong lesson right
+        after the failure that made this distinction matter.
+        """
         self._section(messages.REPORT_SECTION_5)
         self._add(messages.REPORT_SECTION_5_INTRO)
-        missing = [
+
+        blocking = [
             *self._plan.core.missing_mandatory,
             *self._plan.container15.missing_mandatory,
         ]
-        if not missing:
+        non_blocking = []
+        for item in self._plan.faturamento:
+            if item.core is not None:
+                non_blocking.extend(item.core.missing_mandatory)
+            non_blocking.extend(item.result.missing_mandatory)
+            non_blocking.extend(self._unmapped_mandatory(item))
+
+        if not blocking and not non_blocking:
             self._add(messages.REPORT_NOTHING)
             return
-        for record in missing:
+
+        for header, records in (
+            (messages.REPORT_SECTION_5_BLOCKING, blocking),
+            (messages.REPORT_SECTION_5_NON_BLOCKING, non_blocking),
+        ):
+            if not records:
+                continue
+            self._add()
+            self._add(header)
+            for record in records:
+                origin = f" [{record.origin}]" if record.origin else ""
+                self._add(
+                    f"  - {record.target_column}{origin} "
+                    f"(origem: {record.source_label}) — {record.detail}"
+                )
+
+    @staticmethod
+    def _unmapped_mandatory(item: PlannedFaturamento) -> list[FieldRecord]:
+        """Mandatory container-26 columns that no mapping entry even claims.
+
+        `missing_mandatory` can only report columns a mapping entry produced a
+        record for. A column that no entry claims at all would otherwise vanish
+        from section 5 entirely - exactly the silent gap spec 13 rule 7 forbids.
+
+        Columns that ARE mapped are skipped here even when they did not reach
+        the payload: an unresolved value already has its own FieldRecord, and
+        emitting a second line would double-count it in the same section.
+        """
+        claimed = {
+            record.target_column for record in item.result.records if record.target_column
+        }
+        return [
+            FieldRecord(
+                source_label=messages.REPORT_NO_SOURCE,
+                outcome=Outcome.EMPTY_SOURCE,
+                target_column=column,
+                mandatory=True,
+                origin=f"RDM {item.issue_id}",
+                detail=messages.REPORT_MANDATORY_UNMAPPED,
+            )
+            for column in MANDATORY_CONTAINER26_COLUMNS
+            if column not in item.result.payload and column not in claimed
+        ]
+
+    def _section_truncated(self) -> None:
+        """Values cut to fit a VARCHAR(255) plugin column.
+
+        Unnumbered on purpose. The value reached GLPI, so it belongs to the
+        WRITTEN bucket and section 7's total must not move; but a truncation is
+        the only place this migration knowingly loses source text, so it gets a
+        block of its own and shows exactly which characters were dropped.
+        """
+        records = [record for record in self._plan.all_records() if record.truncated]
+        self._section(messages.REPORT_SECTION_TRUNCATED)
+        self._add(messages.REPORT_TRUNCATED_INTRO)
+        if not records:
+            self._add(messages.REPORT_TRUNCATED_NONE)
+            return
+        for record in records:
             self._add(
-                f"  - {record.target_column} (origem: {record.source_label}) "
-                f"— {record.detail}"
+                messages.REPORT_TRUNCATED_LINE.format(
+                    column=record.target_column,
+                    source=record.source_label,
+                    original=record.original_length,
+                    limit=len(record.written_value or ""),
+                )
+            )
+            kept = str(record.written_value or "")
+            self._add(messages.REPORT_TRUNCATED_KEPT.format(value=kept))
+            self._add(
+                messages.REPORT_TRUNCATED_LOST.format(value=record.raw_value[len(kept):])
             )
 
     def _section_skipped_children(self) -> None:
@@ -370,6 +490,222 @@ class Reporter:
         )
         return ok, counts
 
+    def _section_attachments(self) -> bool:
+        """Section 8: every Redmine attachment and where it goes.
+
+        Grouped by host so the reader sees the answer to the actual question -
+        "which files end up on the project and which on each task". Files with
+        no host are listed separately: they are not a failure, they are the
+        documented consequence of an issue being out of scope.
+        """
+        from transform.attachments import (  # local import: avoids a cycle
+            AttachmentOutcome,
+            FAILED_OUTCOMES,
+            SKIPPED_OUTCOMES,
+            SUCCESS_OUTCOMES,
+        )
+
+        planned = self._plan.attachments
+        self._section(messages.REPORT_SECTION_8)
+        self._add(messages.REPORT_SECTION_8_INTRO)
+
+        if not planned:
+            self._add(messages.REPORT_ATTACHMENT_NONE)
+            return True
+
+        hosted = [item for item in planned if item.host_itemtype]
+        homeless = [item for item in planned if not item.host_itemtype]
+
+        for group in (hosted, homeless):
+            if not group:
+                continue
+            if group is homeless:
+                self._add()
+                self._add(messages.REPORT_ATTACHMENT_SKIPPED_HEADER)
+            for label, items in _group_by_host(group):
+                self._add()
+                self._add(
+                    messages.REPORT_ATTACHMENT_HOST.format(
+                        label=label,
+                        count=sum(1 for item in items if item.attachment_id),
+                        size=_human_size(sum(item.filesize for item in items)),
+                    )
+                )
+                for item in items:
+                    if not item.attachment_id:
+                        # Placeholder for an issue we could not read at all.
+                        self._add(messages.REPORT_ATTACHMENT_DETAIL.format(
+                            detail=item.detail
+                        ))
+                        continue
+                    self._add(
+                        messages.REPORT_ATTACHMENT_LINE.format(
+                            filename=item.filename,
+                            size=_human_size(item.filesize),
+                            status=_attachment_status(item),
+                        )
+                    )
+                    if item.host_journal_id:
+                        self._add(
+                            messages.REPORT_ATTACHMENT_ALSO_NOTE.format(
+                                journal_id=item.host_journal_id
+                            )
+                        )
+                    if item.detail:
+                        self._add(
+                            messages.REPORT_ATTACHMENT_DETAIL.format(detail=item.detail)
+                        )
+                    if item.warning:
+                        self._add(
+                            messages.REPORT_ATTACHMENT_WARNING.format(
+                                warning=item.warning
+                            )
+                        )
+
+        # Own arithmetic, mirroring section 7 but counting files.
+        real = [item for item in planned if item.attachment_id]
+        counts = {
+            "pending": sum(
+                1 for item in real if item.outcome is AttachmentOutcome.PLANNED
+            ),
+            "done": sum(1 for item in real if item.outcome in SUCCESS_OUTCOMES),
+            "skipped": sum(1 for item in real if item.outcome in SKIPPED_OUTCOMES),
+            "failed": sum(1 for item in real if item.outcome in FAILED_OUTCOMES),
+        }
+        total = len(real)
+        parts_sum = sum(counts.values())
+
+        self._add()
+        self._add(messages.REPORT_ATTACHMENT_TOTALS.format(total=total))
+        self._add(messages.REPORT_ATTACHMENT_PENDING.format(count=counts["pending"]))
+        self._add(messages.REPORT_ATTACHMENT_DONE.format(count=counts["done"]))
+        self._add(messages.REPORT_ATTACHMENT_SKIPPED.format(count=counts["skipped"]))
+        self._add(messages.REPORT_ATTACHMENT_FAILED.format(count=counts["failed"]))
+        parts = " + ".join(str(value) for value in counts.values())
+        ok = parts_sum == total
+        self._add(
+            messages.REPORT_ATTACHMENT_OK.format(parts=parts, total=total)
+            if ok
+            else messages.REPORT_ATTACHMENT_FAIL.format(parts=parts_sum, total=total)
+        )
+        return ok
+
+    def _section_notes(self) -> bool:
+        """Section 9: every Redmine journal entry and where it goes.
+
+        Grouped by host, exactly like section 8, because the reader's question
+        is the same one - "which notes end up on the project and which on each
+        task". Two deliberate differences from the attachment section:
+
+        1. History-only entries (a status change with no text) are NOT listed
+           one per line. RDM 16467 alone has 63 of them; they would bury the 14
+           notes that matter. They get one aggregate line per host and are
+           still counted, so nothing disappears silently.
+        2. Each migrated note shows a one-line excerpt of its text, so the plan
+           can be checked against Redmine without opening both side by side.
+        """
+        from transform.notes import (  # local import: avoids a cycle
+            FAILED_OUTCOMES,
+            NoteOutcome,
+            SKIPPED_OUTCOMES,
+            SUCCESS_OUTCOMES,
+        )
+
+        planned = self._plan.notes_planned
+        self._section(messages.REPORT_SECTION_9)
+        self._add(messages.REPORT_SECTION_9_INTRO)
+
+        # Text is what makes a journal entry a note. A file uploaded with no
+        # comment beside it is history, and its file reaches GLPI through the
+        # Documentos tab of its item - reported in section 8, not here.
+        real = [item for item in planned if item.journal_id and item.has_text]
+        if not real:
+            self._add(messages.REPORT_NOTE_NONE)
+            # Still fall through to the arithmetic: a tree can be all history.
+
+        hosted = [item for item in real if item.host_itemtype]
+        homeless = [item for item in real if not item.host_itemtype]
+        # History-only entries never reach a host, so they are counted per
+        # issue and shown under whichever host label their issue carries.
+        history_by_label: dict[str, int] = {}
+        for item in planned:
+            if item.outcome is NoteOutcome.HISTORY_ONLY:
+                label = item.host_label or str(item.issue_id)
+                history_by_label[label] = history_by_label.get(label, 0) + 1
+
+        for group in (hosted, homeless):
+            if not group:
+                continue
+            if group is homeless:
+                self._add()
+                self._add(messages.REPORT_NOTE_SKIPPED_HEADER)
+            for label, items in _group_by_host(group):
+                self._add()
+                self._add(
+                    messages.REPORT_NOTE_HOST.format(label=label, count=len(items))
+                )
+                for item in items:
+                    self._add(
+                        messages.REPORT_NOTE_LINE.format(
+                            journal_id=item.journal_id,
+                            author=item.author or "?",
+                            created_on=item.created_on or "?",
+                            status=_note_status(item),
+                        )
+                    )
+                    if item.private:
+                        self._add(messages.REPORT_NOTE_PRIVATE_TAG)
+                    self._add(
+                        messages.REPORT_NOTE_TEXT.format(
+                            text=_note_excerpt(item.text)
+                        )
+                    )
+                    if item.attachment_names:
+                        self._add(
+                            messages.REPORT_NOTE_FILES.format(
+                                names=", ".join(item.attachment_names)
+                            )
+                        )
+                    if item.detail:
+                        self._add(messages.REPORT_NOTE_DETAIL.format(detail=item.detail))
+                # The history count belongs to the host, not to any one note.
+                history = history_by_label.pop(label, 0)
+                if history:
+                    self._add(messages.REPORT_NOTE_HISTORY_ONLY.format(count=history))
+
+        # Issues whose journals are ALL history-only never appear above, so
+        # their counts would otherwise vanish. They are the common case.
+        for label, count in history_by_label.items():
+            self._add()
+            self._add(messages.REPORT_NOTE_HOST_NO_TEXT.format(label=label))
+            self._add(messages.REPORT_NOTE_HISTORY_ONLY.format(count=count))
+
+        # Own arithmetic, mirroring sections 7 and 8 but counting notes.
+        real = [item for item in planned if item.journal_id]
+        counts = {
+            "pending": sum(1 for item in real if item.outcome is NoteOutcome.PLANNED),
+            "done": sum(1 for item in real if item.outcome in SUCCESS_OUTCOMES),
+            "skipped": sum(1 for item in real if item.outcome in SKIPPED_OUTCOMES),
+            "failed": sum(1 for item in real if item.outcome in FAILED_OUTCOMES),
+        }
+        total = len(real)
+        parts_sum = sum(counts.values())
+
+        self._add()
+        self._add(messages.REPORT_NOTE_TOTALS.format(total=total))
+        self._add(messages.REPORT_NOTE_PENDING.format(count=counts["pending"]))
+        self._add(messages.REPORT_NOTE_DONE.format(count=counts["done"]))
+        self._add(messages.REPORT_NOTE_SKIPPED.format(count=counts["skipped"]))
+        self._add(messages.REPORT_NOTE_FAILED.format(count=counts["failed"]))
+        parts = " + ".join(str(value) for value in counts.values())
+        ok = parts_sum == total
+        self._add(
+            messages.REPORT_NOTE_OK.format(parts=parts, total=total)
+            if ok
+            else messages.REPORT_NOTE_FAIL.format(parts=parts_sum, total=total)
+        )
+        return ok
+
     # -- public API --------------------------------------------------------
 
     def render(self) -> str:
@@ -380,10 +716,13 @@ class Reporter:
         self._section_empty_source()
         self._section_unresolved()
         self._section_mandatory()
+        self._section_truncated()
         self._section_skipped_children()
         self._section_relations()
         self._section_never_write()
         self._integrity_ok, _ = self._section_integrity()
+        self._attachments_ok = self._section_attachments()
+        self._notes_ok = self._section_notes()
 
         for note in self._plan.notes:
             self._add()
@@ -401,6 +740,61 @@ class Reporter:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(self.render(), encoding="utf-8")
         return target
+
+
+def _group_by_host(items: list) -> list[tuple[str, list]]:
+    """Attachments or notes grouped by host label, in the order they were planned.
+
+    Pre-order matters here: the project comes first, then its tasks in tree
+    order, which is the order the reader already knows from section 1.
+    """
+    groups: dict[str, list] = {}
+    order: list[str] = []
+    for item in items:
+        label = item.host_label or str(item.issue_id)
+        if label not in groups:
+            groups[label] = []
+            order.append(label)
+        groups[label].append(item)
+    return [(label, groups[label]) for label in order]
+
+
+def _attachment_status(item) -> str:
+    """PT-BR status label for one attachment, GLPI id filled in when known."""
+    template = messages.REPORT_ATTACHMENT_STATUS.get(
+        str(item.outcome.value), str(item.outcome.value)
+    )
+    return template.format(glpi_id=item.glpi_document_id or "?")
+
+
+def _note_status(item) -> str:
+    """PT-BR status label for one note, GLPI id filled in when known."""
+    template = messages.REPORT_NOTE_STATUS.get(
+        str(item.outcome.value), str(item.outcome.value)
+    )
+    return template.format(glpi_id=item.glpi_notepad_id or "?")
+
+
+def _note_excerpt(text: str, limit: int = NOTE_EXCERPT_CHARS) -> str:
+    """One-line preview of a note.
+
+    The report is a plan, not an archive: the reader needs to recognise which
+    note a line refers to, and the full text is in Redmine (and, after --apply,
+    in GLPI). Newlines are collapsed so one note stays one line.
+    """
+    flat = " ".join(text.split())
+    if len(flat) <= limit:
+        return flat
+    return flat[: limit - 1].rstrip() + "…"
+
+
+def _human_size(size: int) -> str:
+    """Byte count as KB/MB. Display only - never used for a decision."""
+    if size < 1024:
+        return f"{size} B"
+    if size < 1024 * 1024:
+        return f"{size / 1024:.0f} KB"
+    return f"{size / (1024 * 1024):.1f} MB"
 
 
 def default_report_path(issue_id: int, directory: str | Path = ".") -> Path:

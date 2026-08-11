@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 from pathlib import Path
 
 # Allow `python main.py` from the project root without installing the package.
@@ -22,6 +23,11 @@ from clients.glpi import GlpiClient  # noqa: E402
 from clients.redmine import RedmineClient  # noqa: E402
 from config.settings import (  # noqa: E402
     DEFAULT_DB_PATH,
+    DOCUMENT_MARKER_PREFIX,
+    ITEMTYPE_DOCUMENT,
+    ITEMTYPE_FATURAMENTO,
+    ITEMTYPE_NOTEPAD,
+    NOTE_MARKER_PREFIX,
     ConfigError,
     load_settings,
     load_yaml,
@@ -38,8 +44,13 @@ from resolve.dropdowns import DropdownResolver  # noqa: E402
 from resolve.status import StatusResolver  # noqa: E402
 from resolve.users import UserResolver  # noqa: E402
 from store.db import STATUS_OK, MigrationStore  # noqa: E402
+from transform.attachments import (  # noqa: E402
+    AttachmentOutcome,
+    plan_attachments,
+)
 from transform.faturamento import discover_from_relations  # noqa: E402
 from transform.mapper import Mapper  # noqa: E402
+from transform.notes import NoteOutcome, plan_notes  # noqa: E402
 from transform.tree import Disposition, plan_tree  # noqa: E402
 
 EXIT_OK = 0
@@ -60,6 +71,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--yes", action="store_true", help=messages.CLI_HELP_YES)
     parser.add_argument("--db", default=str(DEFAULT_DB_PATH), help=messages.CLI_HELP_DB)
     parser.add_argument("--report", default=None, help=messages.CLI_HELP_REPORT)
+    # Attachments migrate by default: a project without its files is not the
+    # migration anyone asked for. The flag exists for a quick run or a flaky
+    # network - the files still appear in report section 8, marked as skipped.
+    parser.add_argument(
+        "--skip-attachments",
+        action="store_true",
+        help=messages.CLI_HELP_SKIP_ATTACHMENTS,
+    )
+    # Notes follow the same rule as attachments: migrated by default, because a
+    # project without its history is not the migration anyone asked for.
+    parser.add_argument(
+        "--skip-notes",
+        action="store_true",
+        help=messages.CLI_HELP_SKIP_NOTES,
+    )
     return parser
 
 
@@ -70,7 +96,7 @@ def dropdown_itemtypes(mapping: dict) -> list[str]:
     itemtype (spec 9.0 step 3: one call per dictionary, not per field).
     """
     itemtypes: list[str] = []
-    for section in ("container15", "container25", "project_core", "task_core"):
+    for section in ("container15", "container26", "project_core", "task_core"):
         for entry in mapping.get(section) or []:
             if entry.get("transform") != "dropdown":
                 continue
@@ -106,6 +132,19 @@ def run_preflight(
         return False
     print(messages.PREFLIGHT_FIELDS_RIGHTS_OK)
 
+    # Step 2b - the read above only proves READ access to the plugin. Writing a
+    # container row on a ProjectTask needs UPDATE on `projecttask` as well, and
+    # on 2026-08-07 the profile had it for `project` but not for `projecttask`,
+    # so every container-26 row was refused after the tasks had been created.
+    # Deliberately a warning, not a stop: only the Faturamento tab is lost, the
+    # tasks are created and apply already degrades gracefully. None means the
+    # right could not be read - stay silent rather than warn on a guess.
+    projecttask_right = glpi.can_write_projecttask_containers()
+    if projecttask_right is False:
+        print(messages.PREFLIGHT_PROJECTTASK_RIGHT_MISSING)
+    elif projecttask_right:
+        print(messages.PREFLIGHT_PROJECTTASK_RIGHT_OK)
+
     # Step 3 - preload and cache every dropdown dictionary.
     itemtypes = dropdown_itemtypes(mapping)
     print(messages.PREFLIGHT_DROPDOWNS_LOADING.format(count=len(itemtypes)))
@@ -139,6 +178,25 @@ def run_preflight(
             )
         )
 
+    # Step 4 - documents. Both checks WARN and never abort: a project whose
+    # files fail to upload is still a correct project, the same reasoning as
+    # step 2b. The right is read, not probed with a write, so None ("could not
+    # tell") stays silent rather than warning on a guess.
+    document_right = glpi.can_create_documents()
+    if document_right is False:
+        print(messages.PREFLIGHT_DOCUMENT_RIGHT_MISSING)
+
+    try:
+        extensions = glpi.load_document_types()
+    except ApiError as exc:
+        # Only costs the report warning about unknown extensions; the upload
+        # itself is unaffected, and GLPI remains the authority on what it takes.
+        print(
+            messages.PREFLIGHT_DOCUMENT_TYPES_FAILED.format(detail=messages.redact(exc))
+        )
+    else:
+        print(messages.PREFLIGHT_DOCUMENT_TYPES_OK.format(count=len(extensions)))
+
     # Redmine reachability, checked against the issue actually requested.
     try:
         redmine.fetch_issue(issue_id, include=())
@@ -156,6 +214,8 @@ def build_project_plan(
     redmine: RedmineClient,
     mapping: dict,
     issue_id: int,
+    skip_attachments: bool = False,
+    skip_notes: bool = False,
 ) -> ProjectPlan:
     """Read the whole tree and map it into a GLPI plan. Writes nothing."""
     tree = redmine.fetch_tree(issue_id)
@@ -187,12 +247,15 @@ def build_project_plan(
                 )
             )
         elif planned.disposition is Disposition.FATURAMENTO:
-            # A tracker-15 descendant becomes a container-25 row on the ROOT
-            # project, never a task (spec 6.5, step 2).
+            # A tracker-15 descendant becomes a ProjectTask of type Faturamento
+            # on the ROOT project carrying a container-26 row - never a plain
+            # task, and never nested under its Redmine parent (spec 6.5, step 2).
+            fat_core, fat_container = mapper.map_faturamento(planned.node.issue)
             faturamento.append(
                 PlannedFaturamento(
                     issue=planned.node.issue,
-                    result=mapper.map_faturamento(planned.node.issue),
+                    core=fat_core,
+                    result=fat_container,
                     origin="child",
                 )
             )
@@ -210,13 +273,38 @@ def build_project_plan(
     # Second Faturamento path: relations of the root issue (spec 6.5, step 1).
     discovery = discover_from_relations(redmine, root_issue)
     for related_issue in discovery.issues:
+        fat_core, fat_container = mapper.map_faturamento(related_issue)
         faturamento.append(
             PlannedFaturamento(
                 issue=related_issue,
-                result=mapper.map_faturamento(related_issue),
+                core=fat_core,
+                result=fat_container,
                 origin="relation",
             )
         )
+
+    # Attachments last: the host of every file is the disposition assigned
+    # above, so this needs the finished tree plan and the relation discovery.
+    # Only the RELATION-sourced Faturamento issues are passed - a tracker-15
+    # descendant is already a node of tree_plan and would be counted twice.
+    attachments = plan_attachments(
+        tree_plan,
+        faturamento_issues=discovery.issues,
+        root_issue_id=int(root_issue["id"]),
+        tree_failures=[*tree.failures, *discovery.failures],
+        document_types=glpi.document_type_extensions(),
+        skip=skip_attachments,
+    )
+
+    # Notes share the attachment host rule (transform.notes imports it rather
+    # than repeating it), so they need exactly the same inputs.
+    notes = plan_notes(
+        tree_plan,
+        faturamento_issues=discovery.issues,
+        root_issue_id=int(root_issue["id"]),
+        tree_failures=[*tree.failures, *discovery.failures],
+        skip=skip_notes,
+    )
 
     return ProjectPlan(
         issue=root_issue,
@@ -226,6 +314,8 @@ def build_project_plan(
         tasks=tasks,
         faturamento=faturamento,
         skipped_children=skipped,
+        attachments=attachments,
+        notes_planned=notes,
         ignored_relations=discovery.ignored_relations,
         tree_failures=[*tree.failures, *discovery.failures],
         tree_cycles=tree.cycles,
@@ -273,13 +363,27 @@ def project_create_payload(plan: ProjectPlan) -> dict:
 
 
 def apply_plan(
-    glpi: GlpiClient, plan: ProjectPlan, store: MigrationStore
+    glpi: GlpiClient,
+    plan: ProjectPlan,
+    store: MigrationStore,
+    redmine: RedmineClient | None = None,
 ) -> bool:
     """Write the plan to GLPI. Returns False when a hard step failed.
 
     Order is fixed by spec 9.2: project, then the container-15 row (always
     carrying rdmfield, even if every other field is empty), then the tasks
-    parent-before-child, then the container-25 rows.
+    parent-before-child, then the Faturamento tasks with their container-26
+    rows (revised 2026-08-06 - these used to be container-25 rows on the
+    project). Then the notes (step 5) and the attachments (step 6).
+
+    Notes come BEFORE the files, reversed on 2026-08-11: a file that arrived
+    with a Redmine note is linked to that note's Notepad row, so the row has to
+    exist by the time step 6 runs. Attachments stay last because by then every
+    possible host - project, task, note - is in GLPI.
+
+    `redmine` is optional so existing callers and tests that never reach step 6
+    keep working; without it the attachments are left untouched, since the files
+    can only come from Redmine. The notes need no source client.
     """
     print()
     print(messages.APPLY_HEADER)
@@ -328,32 +432,486 @@ def apply_plan(
         )
         print(messages.APPLY_TASK_CREATED.format(glpi_id=task_id, issue_id=task.issue_id))
 
-    # 4. Container 25 rows. Container 25 is type "tab", so several rows per
-    #    project are expected. If GLPI nevertheless rejects a second row, fall
-    #    back to degraded mode: keep the first, report the rest in full, log
-    #    once, and do not abort (spec 6.5).
-    degraded = False
+    # 4. Faturamento: one ProjectTask of type Faturamento per tracker-15 issue,
+    #    then its container-26 row. The task always hangs off the ROOT project
+    #    with no projecttasks_id - a Faturamento is never nested under its
+    #    Redmine parent, which is also why a skipped ancestor does not orphan it.
+    #
+    #    The task is the load-bearing write; the container row is not. If GLPI
+    #    rejects the row, keep the task, report the values in full and carry on
+    #    (spec 6.5) - aborting here would leave a project half written.
     for item in plan.faturamento:
-        if degraded:
-            item.written = False
-            continue
+        existing = store.lookup(item.issue_id, "ProjectTask")
+        if existing:
+            item.glpi_task_id = existing.glpi_id
+        else:  # noqa: RET505 - the id is registered in plan.glpi_ids below
+            task_payload = dict(item.core.payload)
+            task_payload["projects_id"] = project_id
+            item.glpi_task_id = glpi.create_project_task(task_payload)
+            store.record(
+                item.issue_id, item.glpi_task_id, "ProjectTask", status=STATUS_OK
+            )
+            print(
+                messages.APPLY_FATURAMENTO_TASK_CREATED.format(
+                    glpi_id=item.glpi_task_id, issue_id=item.issue_id
+                )
+            )
+
+        # Faturamento task ids used to live only on the item, so nothing else
+        # could find them. Registering them here is what lets an attachment
+        # resolve its host in step 5, and it also fills the GLPI column of the
+        # tree in the report - _tree_lines reads exactly this map.
+        plan.glpi_ids[item.issue_id] = item.glpi_task_id
+
         try:
-            row = glpi.create_faturamento_row(project_id, item.result.payload)
+            row = glpi.create_faturamento_row(item.glpi_task_id, item.result.payload)
         except ApiError as exc:
-            degraded = True
             item.written = False
-            note = messages.APPLY_FATURAMENTO_DEGRADED.format(detail=messages.redact(exc))
+            note = messages.APPLY_FATURAMENTO_DEGRADED.format(
+                issue_id=item.issue_id,
+                task_id=item.glpi_task_id,
+                detail=messages.redact(exc),
+            )
             print(note)
             plan.notes.append(note)
             continue
         item.glpi_id = row
-        store.record(item.issue_id, row, "PluginFieldsProjectfaturamento", status=STATUS_OK)
+        store.record(item.issue_id, row, ITEMTYPE_FATURAMENTO, status=STATUS_OK)
         print(
-            messages.APPLY_FATURAMENTO_CREATED.format(row_id=row, issue_id=item.issue_id)
+            messages.APPLY_FATURAMENTO_CREATED.format(
+                row_id=row, task_id=item.glpi_task_id, issue_id=item.issue_id
+            )
         )
+
+    # 5. Notes -> GLPI Notepad rows. BEFORE the files, and the order is not
+    # cosmetic: a file that arrived with a note is linked to that note's Notepad
+    # row, so the row has to exist first. Needs no Redmine client - the journal
+    # text came down with the tree during the plan phase.
+    apply_notes(glpi, plan, store)
+
+    # 6. Attachments -> GLPI Documents, last, because by now every possible host
+    # exists: the project, its tasks, and the notes written a moment ago.
+    if redmine is not None:
+        apply_attachments(glpi, redmine, plan, store)
 
     print(messages.APPLY_DONE)
     return True
+
+
+def apply_attachments(
+    glpi: GlpiClient,
+    redmine: RedmineClient,
+    plan: ProjectPlan,
+    store: MigrationStore,
+) -> None:
+    """Upload each planned attachment and link it to its host item.
+
+    Degrades, never aborts. By the time this runs the project, its tasks and
+    its Faturamento rows are already written; raising here would leave a
+    half-migrated project behind for the sake of one file. Every failure sets an
+    outcome on the PlannedAttachment, adds a note to the report and moves on -
+    the same rule the container-26 row follows in step 4.
+    """
+    pending = [
+        item
+        for item in plan.attachments
+        if item.outcome is AttachmentOutcome.PLANNED and item.host_itemtype
+    ]
+    if not pending:
+        return
+
+    print()
+    print(messages.APPLY_ATTACHMENTS_HEADER.format(count=len(pending)))
+
+    for item in pending:
+        host_itemtype = item.host_itemtype
+        host_id = plan.glpi_ids.get(item.host_redmine_id)
+        if not host_id:
+            # The host was planned but never created (a task whose POST failed,
+            # or a Faturamento that degraded). Not a file problem - say so.
+            item.outcome = AttachmentOutcome.NO_HOST
+            item.detail = messages.REPORT_ATTACHMENT_HOST_MISSING
+            note = messages.APPLY_ATTACHMENT_NO_HOST.format(
+                attachment_id=item.attachment_id,
+                issue_id=item.issue_id,
+                filename=item.filename,
+            )
+            print(note)
+            plan.notes.append(note)
+            continue
+
+        try:
+            _migrate_one_attachment(
+                glpi, redmine, item, host_itemtype, host_id, store, plan
+            )
+        except ApiError as exc:
+            # The outcome was already set by the helper where it knew which
+            # step failed; this is the catch-all for anything it did not.
+            if item.outcome is AttachmentOutcome.PLANNED:
+                item.outcome = AttachmentOutcome.FAILED_UPLOAD
+            item.detail = messages.redact(exc)
+            note = messages.APPLY_ATTACHMENT_FAILED.format(
+                attachment_id=item.attachment_id,
+                issue_id=item.issue_id,
+                filename=item.filename,
+                detail=messages.redact(exc),
+            )
+            print(note)
+            plan.notes.append(note)
+
+
+def _note_host(plan: ProjectPlan, item) -> int | None:
+    """The Notepad row this file should ALSO be linked to, if any.
+
+    A file that arrived with a Redmine note is attached to that note as well -
+    what GLPI's own UI does, verified 2026-08-11 on Notepad 50 / Document_Item
+    119. Step 5 wrote those rows a moment ago, so the id is in
+    `plan.glpi_notepad_ids`.
+
+    This is strictly an EXTRA link. The document is always linked to the project
+    or task first, so it appears on the Documentos tab where users look for it;
+    a note that failed to write costs the convenience link and nothing else.
+    """
+    if not item.host_journal_id:
+        return None
+    return plan.glpi_notepad_ids.get(item.host_journal_id)
+
+
+def _migrate_one_attachment(
+    glpi: GlpiClient,
+    redmine: RedmineClient,
+    item,
+    host_itemtype: str,
+    host_id: int,
+    store: MigrationStore,
+    plan: ProjectPlan,
+) -> None:
+    """One attachment: dedup, download, upload, link, record.
+
+    GLPI is asked first and the local map second - deliberately the same order
+    as the project's own dedup (spec 9.1). The marker in the document's comment
+    survives a lost migration.db; the SQLite row is a crash guard, not the
+    authority.
+
+    Every link goes through `_link_all_hosts`: the project or task always, and
+    the file's note as well when it came with one.
+    """
+    existing = glpi.find_document_by_marker(item.attachment_id)
+    if existing:
+        document_id = int(existing[0]["id"])
+        item.glpi_document_id = document_id
+        item.outcome = AttachmentOutcome.DEDUP_GLPI
+        _link_all_hosts(glpi, document_id, host_itemtype, host_id, plan, item)
+        store.record(
+            item.attachment_id,
+            document_id,
+            ITEMTYPE_DOCUMENT,
+            parent_redmine_id=item.issue_id,
+            status=STATUS_OK,
+        )
+        print(
+            messages.APPLY_ATTACHMENT_DEDUP.format(
+                attachment_id=item.attachment_id,
+                issue_id=item.issue_id,
+                glpi_id=document_id,
+            )
+        )
+        return
+
+    local = store.lookup(item.attachment_id, ITEMTYPE_DOCUMENT)
+    if local:
+        # The marker is gone from GLPI but the map still points at a document.
+        # Trust it only if the document is really there; otherwise fall through
+        # and upload again rather than silently losing the file.
+        if glpi.get_item(ITEMTYPE_DOCUMENT, local.glpi_id):
+            item.glpi_document_id = local.glpi_id
+            item.outcome = AttachmentOutcome.DEDUP_LOCAL
+            _link_all_hosts(
+                glpi, local.glpi_id, host_itemtype, host_id, plan, item
+            )
+            return
+
+    with tempfile.TemporaryDirectory(prefix="rdm-anexo-") as workdir:
+        # Redmine filenames carry accents, spaces and slashes-in-subject; only
+        # the basename is used and the directory is thrown away either way.
+        local_path = Path(workdir) / (Path(item.filename).name or "anexo")
+        try:
+            redmine.download_attachment(item.content_url, local_path)
+        except ApiError:
+            item.outcome = AttachmentOutcome.FAILED_DOWNLOAD
+            raise
+
+        try:
+            document_id = glpi.upload_document(
+                local_path,
+                name=item.filename,
+                comment=_document_comment(item),
+            )
+        except ApiError:
+            item.outcome = AttachmentOutcome.FAILED_UPLOAD
+            raise
+
+    item.glpi_document_id = document_id
+    store.record(
+        item.attachment_id,
+        document_id,
+        ITEMTYPE_DOCUMENT,
+        parent_redmine_id=item.issue_id,
+        status=STATUS_OK,
+    )
+
+    try:
+        _link_all_hosts(glpi, document_id, host_itemtype, host_id, plan, item)
+    except ApiError:
+        # The document exists and is recorded; only the link is missing, and
+        # that is a different repair than a re-upload. Say which one it is.
+        item.outcome = AttachmentOutcome.FAILED_LINK
+        raise
+
+    item.outcome = AttachmentOutcome.UPLOADED
+    print(
+        messages.APPLY_ATTACHMENT_UPLOADED.format(
+            attachment_id=item.attachment_id,
+            issue_id=item.issue_id,
+            glpi_id=document_id,
+            # The RESOLVED host, not the planned one: those differ whenever the
+            # file rides on a note, and printing "Project 52" for Notepad 52
+            # would send anyone reading the log to the wrong table.
+            itemtype=host_itemtype,
+            items_id=host_id,
+            filename=item.filename,
+        )
+    )
+
+
+def _link_all_hosts(
+    glpi: GlpiClient,
+    document_id: int,
+    host_itemtype: str,
+    host_id: int,
+    plan: ProjectPlan,
+    item,
+) -> None:
+    """Link the document to its item, and to its note when it has one.
+
+    The ITEM link is the one that always happens: it is what puts the file on
+    the Documentos tab, which is where users go to find every file of a project
+    in one place. Closed decision 2026-08-11, after a first cut that put a
+    note's file only on the note - GLPI's own UI does that, but it hides the
+    file from the tab people actually browse.
+
+    The NOTE link is an addition, and its failure is not the file's failure: the
+    document is already on the project by then. It is reported and skipped, not
+    raised, so one broken note cannot mark a perfectly migrated file as failed.
+    """
+    _ensure_link(glpi, document_id, host_itemtype, host_id)
+
+    notepad_id = _note_host(plan, item)
+    if not notepad_id:
+        return
+    try:
+        _ensure_link(glpi, document_id, ITEMTYPE_NOTEPAD, notepad_id)
+    except ApiError as exc:
+        note = messages.APPLY_ATTACHMENT_NOTE_LINK_FAILED.format(
+            attachment_id=item.attachment_id,
+            journal_id=item.host_journal_id,
+            detail=messages.redact(exc),
+        )
+        print(note)
+        plan.notes.append(note)
+
+
+def _ensure_link(glpi: GlpiClient, document_id: int, itemtype: str, items_id: int) -> None:
+    """Link the document to the item unless that link already exists.
+
+    Checked rather than blindly posted: GLPI refuses a duplicate Document_Item,
+    and that refusal would otherwise read as a real failure on a re-run.
+    """
+    for row in glpi.document_links(itemtype, items_id):
+        if str(row.get("documents_id")) == str(int(document_id)):
+            return
+    glpi.link_document(document_id, itemtype, items_id)
+
+
+def _document_comment(item) -> str:
+    """Document.comment: the dedup marker first, then the Redmine provenance.
+
+    The marker MUST stay on its own first line - find_document_by_marker
+    compares whole lines so that rdmattachment:2931 cannot match
+    rdmattachment:29314.
+    """
+    lines = [
+        f"{DOCUMENT_MARKER_PREFIX}{item.attachment_id}",
+        messages.DOCUMENT_ORIGIN.format(
+            issue_id=item.issue_id, attachment_id=item.attachment_id
+        ),
+    ]
+    if item.description:
+        lines.append(messages.DOCUMENT_DESCRIPTION.format(text=item.description))
+    if item.author or item.created_on:
+        lines.append(
+            messages.DOCUMENT_AUTHOR.format(
+                author=item.author or "?", created_on=item.created_on or "?"
+            )
+        )
+    return "\n".join(lines)
+
+
+def apply_notes(glpi: GlpiClient, plan: ProjectPlan, store: MigrationStore) -> None:
+    """Write each planned note as a Notepad row on its host item.
+
+    Degrades, never aborts - the same rule as the attachments and the
+    container-26 row. By the time this runs the project, its tasks and its
+    files are already in GLPI; raising here would leave a half-migrated project
+    behind for the sake of one note.
+    """
+    pending = [
+        item
+        for item in plan.notes_planned
+        if item.outcome is NoteOutcome.PLANNED and item.host_itemtype
+    ]
+    if not pending:
+        return
+
+    print()
+    print(messages.APPLY_NOTES_HEADER.format(count=len(pending)))
+
+    for item in pending:
+        host_id = plan.glpi_ids.get(item.host_redmine_id)
+        if not host_id:
+            # The host was planned but never created (a task whose POST failed,
+            # or a Faturamento that degraded). Not a note problem - say so.
+            item.outcome = NoteOutcome.NO_HOST
+            item.detail = messages.REPORT_NOTE_HOST_MISSING
+            note = messages.APPLY_NOTE_NO_HOST.format(
+                journal_id=item.journal_id, issue_id=item.issue_id
+            )
+            print(note)
+            plan.notes.append(note)
+            continue
+
+        try:
+            _migrate_one_note(glpi, item, host_id, store)
+            # Registered in ONE place, whatever branch produced the id: step 6
+            # looks a file's note up here, and a note missing from this map
+            # silently sends its files back to the project.
+            if item.glpi_notepad_id:
+                plan.glpi_notepad_ids[item.journal_id] = item.glpi_notepad_id
+        except ApiError as exc:
+            item.outcome = NoteOutcome.FAILED_WRITE
+            item.detail = messages.redact(exc)
+            note = messages.APPLY_NOTE_FAILED.format(
+                journal_id=item.journal_id,
+                issue_id=item.issue_id,
+                detail=messages.redact(exc),
+            )
+            print(note)
+            plan.notes.append(note)
+
+
+def _migrate_one_note(
+    glpi: GlpiClient, item, host_id: int, store: MigrationStore
+) -> None:
+    """One note: dedup, write, record.
+
+    GLPI is asked first and the local map second - deliberately the same order
+    as the project's own dedup (spec 9.1) and the attachments'. The marker in
+    the note's own content survives a lost migration.db.
+
+    Simpler than its attachment twin in one way and stricter in another: there
+    is nothing to download, but the GLPI lookup is scoped to this host item,
+    because a Notepad row cannot outlive the item it hangs off.
+    """
+    existing = glpi.find_notepad_by_marker(
+        item.host_itemtype, host_id, item.journal_id
+    )
+    if existing:
+        notepad_id = int(existing["id"])
+        item.glpi_notepad_id = notepad_id
+        item.outcome = NoteOutcome.DEDUP_GLPI
+        store.record(
+            item.journal_id,
+            notepad_id,
+            ITEMTYPE_NOTEPAD,
+            parent_redmine_id=item.issue_id,
+            status=STATUS_OK,
+        )
+        print(
+            messages.APPLY_NOTE_DEDUP.format(
+                journal_id=item.journal_id,
+                issue_id=item.issue_id,
+                glpi_id=notepad_id,
+            )
+        )
+        return
+
+    local = store.lookup(item.journal_id, ITEMTYPE_NOTEPAD)
+    if local:
+        # The marker is gone from GLPI but the map still points at a row. Trust
+        # it only if the row is really there; otherwise fall through and write
+        # again rather than silently losing the text.
+        if glpi.get_item(ITEMTYPE_NOTEPAD, local.glpi_id):
+            item.glpi_notepad_id = local.glpi_id
+            item.outcome = NoteOutcome.DEDUP_LOCAL
+            return
+
+    notepad_id = glpi.create_notepad(
+        item.host_itemtype, host_id, _notepad_content(item)
+    )
+    item.glpi_notepad_id = notepad_id
+    item.outcome = NoteOutcome.WRITTEN
+    store.record(
+        item.journal_id,
+        notepad_id,
+        ITEMTYPE_NOTEPAD,
+        parent_redmine_id=item.issue_id,
+        status=STATUS_OK,
+    )
+    print(
+        messages.APPLY_NOTE_WRITTEN.format(
+            journal_id=item.journal_id,
+            issue_id=item.issue_id,
+            glpi_id=notepad_id,
+            itemtype=item.host_itemtype,
+            items_id=host_id,
+        )
+    )
+
+
+def _notepad_content(item) -> str:
+    """Notepad.content: the dedup marker first, then provenance, then the text.
+
+    The marker MUST stay on its own first line - find_notepad_by_marker compares
+    whole lines so that rdmnote:1559 cannot match rdmnote:155016. It is
+    deliberately NOT folded into the author line, readable as that would be: the
+    author name is re-read from Redmine on every run and a marker that moved
+    with it would stop matching, turning dedup into duplication.
+
+    The original text is copied verbatim - it is migrated data, never rewritten
+    or translated.
+    """
+    header = [
+        f"{NOTE_MARKER_PREFIX}{item.journal_id}",
+        messages.NOTE_ORIGIN.format(
+            issue_id=item.issue_id, journal_id=item.journal_id
+        ),
+    ]
+    if item.author or item.created_on:
+        header.append(
+            messages.NOTE_AUTHOR.format(
+                author=item.author or "?", created_on=item.created_on or "?"
+            )
+        )
+    if item.private:
+        # GLPI's Notepad has no privacy flag, so the fact is carried as text.
+        # A private Redmine note becomes visible to everyone who can see the
+        # project; saying so is the least the migration can do.
+        header.append(messages.NOTE_PRIVATE)
+    if item.attachment_names:
+        # The files themselves are migrated by step 5 as Documents; this only
+        # names them, so the note still reads as it did in Redmine.
+        header.append(messages.NOTE_FILES.format(names=", ".join(item.attachment_names)))
+    return "\n".join([*header, "", item.text])
 
 
 def confirm_apply() -> bool:
@@ -421,7 +979,14 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 return EXIT_FAILED
 
-            plan = build_project_plan(glpi, redmine, mapping, args.issue)
+            plan = build_project_plan(
+                glpi,
+                redmine,
+                mapping,
+                args.issue,
+                skip_attachments=args.skip_attachments,
+                skip_notes=args.skip_notes,
+            )
 
             print()
             print(Reporter(plan, apply_mode=args.apply).render())
@@ -431,7 +996,7 @@ def main(argv: list[str] | None = None) -> int:
                     print(messages.APPLY_CANCELLED)
                     return EXIT_OK
                 with MigrationStore(args.db) as store:
-                    apply_plan(glpi, plan, store)
+                    apply_plan(glpi, plan, store, redmine=redmine)
                 # Re-render so the report shows the Redmine -> GLPI ids.
                 print()
                 print(Reporter(plan, apply_mode=True).render())

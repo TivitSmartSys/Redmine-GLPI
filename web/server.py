@@ -234,7 +234,12 @@ def _register_routes(app: Flask) -> None:
                     "tracker_faturamento": config.TRACKER_FATURAMENTO,
                     "task_trackers": sorted(config.IN_SCOPE_TASK_TRACKERS),
                     "root_trackers": sorted(config.IN_SCOPE_ROOT_TRACKERS),
+                    "tracker_atividades": config.TRACKER_ATIVIDADES,
+                    "projecttasktypes": config.TRACKER_TO_PROJECTTASKTYPE,
                     "mandatory_columns": list(config.MANDATORY_CONTAINER15_COLUMNS),
+                    "mandatory_columns_container26": list(
+                        config.MANDATORY_CONTAINER26_COLUMNS
+                    ),
                     "db_path": str(app.config["DB_PATH"]),
                 },
                 "mapping": {
@@ -242,7 +247,7 @@ def _register_routes(app: Flask) -> None:
                     for section in (
                         "project_core",
                         "container15",
-                        "container25",
+                        "container26",
                         "task_core",
                     )
                 },

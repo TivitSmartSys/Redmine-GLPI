@@ -12,8 +12,11 @@ verbatim next to them.
 
 from __future__ import annotations
 
+from config.settings import MANDATORY_CONTAINER26_COLUMNS
 from report.reporter import ProjectPlan
+from transform.attachments import summarise as summarise_attachments
 from transform.mapper import Outcome
+from transform.notes import summarise as summarise_notes
 
 
 def _outcome_counts(plan: ProjectPlan) -> dict[str, int]:
@@ -42,11 +45,42 @@ def summarise(plan: ProjectPlan) -> dict:
     counts = _outcome_counts(plan)
     tracker = plan.issue.get("tracker") or {}
 
+    # Two counts, never one. Container 15 is validated inside POST /Project, so
+    # a gap there REFUSES the write; container 26 is a direct row write that
+    # skips validation, so a gap there only leaves the row incomplete. Folding
+    # them together would turn a blocker and a nuisance into the same chip.
     missing_mandatory = [
         *plan.core.missing_mandatory,
         *plan.container15.missing_mandatory,
     ]
+    missing_mandatory_faturamento = []
+    for item in plan.faturamento:
+        if item.core is not None:
+            missing_mandatory_faturamento.extend(item.core.missing_mandatory)
+        missing_mandatory_faturamento.extend(item.result.missing_mandatory)
+        # Mapped columns already contributed via missing_mandatory above; only
+        # count the ones no mapping entry claims, or they are counted twice.
+        claimed = {
+            record.target_column
+            for record in item.result.records
+            if record.target_column
+        }
+        missing_mandatory_faturamento.extend(
+            column
+            for column in MANDATORY_CONTAINER26_COLUMNS
+            if column not in item.result.payload and column not in claimed
+        )
     degraded = [item for item in plan.faturamento if not item.written]
+    # Placeholder entries (an issue we could not read) carry no attachment id
+    # and are excluded, exactly as report section 8 excludes them.
+    attachment_counts = summarise_attachments(
+        [item for item in plan.attachments if item.attachment_id]
+    )
+    # Same filter, same reason: a placeholder for an unreadable issue carries
+    # no journal id and is excluded, exactly as report section 9 excludes it.
+    note_counts = summarise_notes(
+        [item for item in plan.notes_planned if item.journal_id]
+    )
 
     return {
         "issue_id": plan.issue_id,
@@ -65,7 +99,29 @@ def summarise(plan: ProjectPlan) -> dict:
         "ignored": counts["no_counterpart"] + counts["unresolved"],
         "unresolved": counts["unresolved"],
         "missing_mandatory": len(missing_mandatory),
+        "missing_mandatory_faturamento": len(missing_mandatory_faturamento),
         "never_write": len(plan.never_write),
+        # Attachments have their own counters for the same reason they have
+        # their own report section: they are files, not fields, and folding them
+        # into the field arithmetic would break the one number the report
+        # exists to guarantee.
+        "attachments": attachment_counts["total"],
+        "attachments_pending": attachment_counts["pending"],
+        "attachments_done": attachment_counts["done"],
+        "attachments_skipped": attachment_counts["skipped"],
+        "attachments_failed": attachment_counts["failed"],
+        "attachments_bytes": attachment_counts["bytes"],
+        # Notes keep their own counters for the same reason files do - and
+        # separate from the files', because section 9 closes its own arithmetic.
+        "notes": note_counts["total"],
+        "notes_pending": note_counts["pending"],
+        "notes_done": note_counts["done"],
+        "notes_skipped": note_counts["skipped"],
+        "notes_failed": note_counts["failed"],
+        # Split out so a panel can say "14 notas de texto entre 77 entradas"
+        # instead of implying 63 notes went missing.
+        "notes_with_text": note_counts["with_text"],
+        "notes_history_only": note_counts["history_only"],
         "skipped_children": len(plan.skipped_children),
         "ignored_relations": len(plan.ignored_relations),
         "tree_failures": len(plan.tree_failures),
