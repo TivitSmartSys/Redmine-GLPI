@@ -253,6 +253,18 @@ GLPI_RIGHT_CREATE = 4
 # constant rather than read per run - a file over the limit is skipped and
 # reported before anything is downloaded, and the value has to be known during
 # the dry-run, which never opens a GLPI config call for it.
+#
+# THIS IS NOT THE EFFECTIVE CEILING. GLPI checks its own 50 MB and then hands
+# the body to PHP, whose `post_max_size` is smaller and refuses it with
+# ERROR_UPLOAD_FILE_TOO_BIG_POST_MAX_SIZE. Measured 2026-08-11 on RDM 17582:
+# an 11.3 MB .docx uploaded, a 33.5 MB .eml did not, so the real limit is
+# somewhere between. The API exposes the PHP value nowhere, which is why the
+# dry-run cannot predict this and the upload is simply attempted.
+#
+# Do NOT lower this constant to a guessed PHP value: it exists to skip files
+# GLPI ITSELF would reject, before the bytes are downloaded. Guessing lower
+# would start skipping files that upload perfectly well. The fix belongs in
+# php.ini (`post_max_size` and `upload_max_filesize`).
 DOCUMENT_MAX_SIZE_MB = 50
 DOCUMENT_MAX_SIZE_BYTES = DOCUMENT_MAX_SIZE_MB * 1024 * 1024
 

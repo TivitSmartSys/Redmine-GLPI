@@ -148,6 +148,10 @@ which had zero rows on the instance, so it was genuinely untested. `document`
 right is 255, `document_max_size` is 50 MB, and `glpi_documenttypes` has 76 rows
 including `.xlsb`/`.msg`/`.eml`/`.ods`, all four of which RDM 16467 needs.
 
+That 50 MB is GLPI's own setting and **not** the effective limit — PHP's
+`post_max_size` is lower and rejects the upload after GLPI has accepted it. See
+the `post_max_size` trap below before trusting the number.
+
 **Documents have a dedup marker; tasks still do not.** `Document.comment` carries
 `rdmattachment:<attachment id>` on its own first line, and
 `find_document_by_marker` is the document twin of `find_by_rdmfield`. GLPI is the
@@ -486,14 +490,34 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
   `Document_Item` itself: `POST` with `itemtype='Notepad'` was accepted over the
   API that day and GLPI filled `entities_id` (75) on its own.
 - **`document_max_size` is not the real ceiling; PHP's `post_max_size` is, and
-  the API does not expose it.** RDM 17582's 33.5 MB `.eml` was refused with
-  `ERROR_UPLOAD_FILE_TOO_BIG_POST_MAX_SIZE` even though `getGlpiConfig` reports
-  `document_max_size = 50` (MB) and `DOCUMENT_MAX_SIZE_BYTES` let it through.
-  Nothing in `getGlpiConfig` carries the PHP limit, so the dry-run cannot
-  predict this one — the upload is attempted and the refusal is reported as
-  `FAILED_UPLOAD`, which is the right behaviour. Raising it is a server-side
-  change to `php.ini` (`post_max_size` and `upload_max_filesize`); do not lower
-  `DOCUMENT_MAX_SIZE_BYTES` to guess at it.
+  the API does not expose it.** Diagnosed 2026-08-11 on RDM 17582's 33.5 MB
+  `.eml`, refused with `ERROR_UPLOAD_FILE_TOO_BIG_POST_MAX_SIZE` even though
+  `getGlpiConfig` reports `document_max_size = 50` (MB) and
+  `DOCUMENT_MAX_SIZE_BYTES` let it through. GLPI checks its own 50 MB first and
+  only then hands the body to PHP, which applies the smaller limit — so the
+  error surfaces at upload time and **never during the dry-run**. Nothing in
+  `getGlpiConfig`, `/Config` or `/getGlpiConfig`'s other keys carries the PHP
+  value; it is only observable by uploading.
+
+  Measured bounds from that same run, both directions: the 11.3 MB `.docx` of
+  RDM 17582 uploaded fine, the 33.5 MB `.eml` did not. So the effective ceiling
+  sits **somewhere above 11 MB and below 33.5 MB** — the usual `php.ini`
+  defaults in that band are 8M/16M/32M. Do not narrow this by guessing; measure
+  it if it ever matters.
+
+  Raising it is a server-side change to `php.ini` — **both** `post_max_size` and
+  `upload_max_filesize`, since `post_max_size` must stay the larger of the two.
+  Do **not** lower `DOCUMENT_MAX_SIZE_BYTES` to match: that constant exists so a
+  file GLPI itself would reject is skipped before anything is downloaded, and
+  moving it to a guessed PHP value would start skipping files that upload
+  perfectly well. The current behaviour is correct — attempt the upload, report
+  the refusal as `FAILED_UPLOAD`, keep going.
+
+  A large file has **two** independent failure points, and they look nothing
+  alike. The same 33.5 MB attachment later failed on the Redmine side instead,
+  with `RemoteDisconnected('Remote end closed connection without response')`
+  during the download — reported as `FAILED_DOWNLOAD`. Read the outcome before
+  blaming the GLPI limit.
 - **An attachment can 404 while the Redmine host is perfectly fine.** RDM 1240's
   77 attachments (2016-2017) all answered 404 on `content_url` while RDM 16467's
   answered 200 from the same host in the same run — the old files are gone from
