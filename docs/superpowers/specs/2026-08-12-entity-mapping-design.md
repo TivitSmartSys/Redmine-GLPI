@@ -148,11 +148,18 @@ sama:
 | `Cliente` w mapie, nazwa znaleziona w GLPI | rozwiązane ID | `WRITTEN` |
 | `Cliente` pusty | 75 | `EMPTY_SOURCE` |
 | `Cliente` spoza 48 (COELCE, AMPLA, CGTF…) | 75 | `NO_COUNTERPART` |
-| `Cliente` z listy „Nao sera migrado" | 75 | `NEVER_WRITE` |
+| `Cliente` z listy „Nao sera migrado" | 75 | `NO_COUNTERPART` ¹ |
 | `Cliente` w mapie, nazwy nie ma w GLPI | 75 | `UNRESOLVED` + ostrzeżenie |
 
 `NO_COUNTERPART` obejmuje m.in. COELCE (481 issues) i AMPLA (456) — nazwy, które
 świadomie nie mają odpowiednika, zgodnie z zamkniętą decyzją z 2026-08-03.
+
+¹ **Korekta wobec pierwotnego designu.** Tu miał być `NEVER_WRITE`; kod tego nie
+zniesie. `_section_integrity` sumuje cztery kubełki z `all_records()`, a rekordy
+`NEVER_WRITE` żyją na osobnej liście `plan.never_write`, celowo z `all_records()`
+wyłączonej — jeden taki rekord w `core.records` rozjechałby sumę sekcji 7.
+Rozróżnienie zostaje w treści `detail`, nie w outcome. Pilnuje tego
+`test_nao_sera_migrado_is_no_counterpart_not_never_write`.
 
 ### `main.py` — preflight
 
@@ -193,12 +200,21 @@ Do istniejącego zestawu pytest:
 1. **Format `completename`.** Zakładam `„A > B > C"`. Jeżeli `GET /Entity`
    zwraca inny separator, normalizacja idzie do resolvera. Do sprawdzenia w
    pierwszym kroku implementacji.
-2. **Dokładna pisownia 48 nazw klientów.** Tabela wyżej jest przepisana z PDF-a,
-   w którym występują półpauzy („ENEL RJ – Cabeamento", „EQUATORIAL GO –
-   Automação"). Przed napisaniem YAML-a: zrzucić rzeczywiste wartości z
-   `PluginFieldsClientefielddropdown` oraz z pola `Cliente` w Redmine i
-   porównać z tą tabelą. Dopasowanie jest po casefold + strip, więc rodzaj
-   myślnika ma znaczenie.
+2. ~~**Dokładna pisownia 48 nazw klientów.**~~ **ZROBIONE 2026-08-12** — i było
+   potrzebne. Zrzut z `PluginFieldsClientefielddropdown` oraz przemiatanie 5594
+   issues z trackerów 14/42 pokazały cztery rozbieżności wobec tabeli wyżej:
+   Redmine i GLPI używają **zwykłego myślnika** („ENEL RJ - Cabeamento" — 43
+   issues, „EQUATORIAL GO - Automação" — 10), nie półpauzy z PDF-a; „MS
+   OPERAÇÕES" ma cedyllę; „CEMIG ROSAL ENERGIA" w słowniku GLPI stoi bez
+   podkreślnika. Dopasowanie jest po casefold + strip, więc przepisana z PDF-a
+   półpauza nie trafiłaby nigdy — kosztem 53 issues. `config/entity_map.yml`
+   trzyma pisownię **zmierzoną**; tabela w tym dokumencie zostaje jako zapis
+   tego, co podał arkusz, i nie jest źródłem prawdy dla kodu.
+
+   Przy okazji: słownik `Cliente` w GLPI ma dziś **53 unikalne wartości** (58
+   wierszy, 5 duplikatów), nie 48 — doszły CGTF, NEOENERGIA, COSERN, ENEVA/MPX
+   i ENPECEL, czyli dokładnie te, o których `mapping.yml` pisał „do ręcznego
+   zarejestrowania przed produkcją". Żadna z nich nie ma encji w arkuszu.
 3. **Projekty już zmigrowane zostają w encji 75.** Ta zmiana ich nie przenosi.
    Przeniesienie istniejących projektów to osobna decyzja i osobne zadanie.
 4. **Encja 0 jako aktywna encja sesji.** Preflight zmienia stan sesji API dla
