@@ -240,9 +240,15 @@ before the rules were corrected, proved the dedup side: with the `Notepad` and
 `Document` rows removed from the SQLite map, 16/16 notes and 12/12 files came
 back `DEDUP_GLPI` with no row and no link duplicated.
 
-Still unproven live: the **second** link, for a file arriving with a note that
-also has text. RDM 17582 has no such journal — its text notes carry no files —
-so only the unit tests cover it. `20472` has one and is not yet migrated.
+**The second link is proven live since 2026-08-12** — RDM 20472 → project 1287,
+the case CLAUDE.md had carried as untested because RDM 17582's text notes carry
+no files. Its journal 164828 has both text and a file: `Notepad` 74 was written,
+the three attachments became Documents 180/181/182, and **181 is linked twice** —
+to the project and to Notepad 74 — while the run uploaded three distinct
+documents, not four. Proven under the entity feature too: project, container row
+and all three documents read back in entity 6 (EGP BR, from Cliente "GPG").
+Worth knowing for the next reader: a `Notepad` row read back over the API has no
+`entities_id` key at all, and the link works regardless.
 
 Verified live 2026-08-11 (GLPI 11.0.6): `GET /Project/<id>/Notepad` and
 `GET /ProjectTask/<id>/Notepad` both answer with a list, `GET /Notepad` returns
