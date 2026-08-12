@@ -45,10 +45,11 @@ while the host project is alive; a project in the trash counts as orphaned.
 
 Exit codes: `0` ok, `1` failed/aborted, `2` configuration error.
 
-There is a pytest suite (`python -m pytest tests -q`, 99 tests) covering the
-confirm gate, the summary figures, the VARCHAR(255) truncation, and the
-attachment and note phases — host assignment, each section's own arithmetic, the
-line-anchored markers and apply degradation. There is no linter or build step.
+There is a pytest suite (`python -m pytest tests -q`, 121 tests) covering the
+confirm gate, the summary figures, the VARCHAR(255) truncation, the client→entity
+map, and the attachment and note phases — host assignment, each section's own
+arithmetic, the line-anchored markers and apply degradation. There is no linter
+or build step.
 Real
 verification is the dry-run against the test list in spec section 1a — notably
 `20238` (minimal), `18620` (out-of-scope child rule, tracker 41), and `20156`
@@ -94,8 +95,8 @@ Module roles:
   [transform/notes.py](transform/notes.py) — plan the files and the notes. Both
   pure. `notes.py` imports `host_for`/`item_label` from `attachments.py` rather
   than repeating them: the disposition→host rule is one rule and must not drift.
-- [resolve/](resolve/) — status, user, and dropdown name→id lookups; all three
-  return `None` on a miss rather than raising or inventing a value.
+- [resolve/](resolve/) — status, user, dropdown and entity name→id lookups; all
+  four return `None` on a miss rather than raising or inventing a value.
 - [store/db.py](store/db.py) — SQLite `migration_map` for idempotence and
   resumability. A cache and crash guard, *not* a replacement for the GLPI
   `rdmfield` check.
@@ -266,6 +267,65 @@ off, so "already migrated" can only ever mean "already on this item" — which i
 also why `reset_migration.py` has nothing to clean on the GLPI side for notes,
 only the local map.
 
+### The project's entity comes from `Cliente`
+
+Opened 2026-08-12. Until then `entities_id` was never sent and every project
+landed in the API session's own entity (75). The client→entity map is
+[config/entity_map.yml](config/entity_map.yml), from a spreadsheet supplied by
+the manager and confirmed with its author; the design is in
+`docs/superpowers/specs/2026-08-12-entity-mapping-design.md`.
+
+**The map is keyed on `completename`, not on the id.** The spreadsheet's ids are
+from the TEST instance ("ID GLPI TESTE"), so hard-coding them would file
+projects into unrelated entities the moment this runs elsewhere — silently,
+because nothing would fail. `id_teste` survives only as a cross-check that
+preflight warns about. Verified 2026-08-12: all 37 completenames resolve on the
+test instance and match their `id_teste`, 37/37.
+
+**Preflight widens the session to the whole tree, and a failure is a hard stop.**
+`POST /changeActiveEntities {entities_id: 0, is_recursive: true}`. The reason is
+not this project's own fields — it is dedup. A fresh session is active in entity
+75 and sees exactly three entities, so `find_by_rdmfield` **cannot see** a
+project filed anywhere else: measured 1 hit root-recursive, 0 hits from 75, for
+the same marker. A narrowed session does not break dedup loudly, it migrates a
+duplicate of every project that already exists — including all of 1265–1283,
+which sit in 75 while their client now points elsewhere. `reset_migration.py`
+does the same widening for the same reason.
+
+Everything else inherits: verified live that the container-15 row, the
+ProjectTask and its container-26 row all take the project's entity. Documents do
+**not** — see the trap below.
+
+**A client with no entity is not an error.** The project is created in
+`DEFAULT_ENTITY_ID` (75) and the report says why. Five outcomes, all on the
+existing `Outcome` enum: `WRITTEN`, `EMPTY_SOURCE`, `NO_COUNTERPART` (a name
+outside the map, *and* the five the sheet marks "Nao sera migrado"),
+`UNRESOLVED` (the map names an entity this GLPI does not have). Note what is
+missing: **`NEVER_WRITE` is not usable here.** Those records live on
+`plan.never_write`, which `all_records()` deliberately excludes, so one placed in
+`core.records` would leave the section-7 sum short of its total — the single
+number the report exists to guarantee.
+
+Measured on the live data (5594 tracker-14/42 issues, 2026-08-12): every root
+issue carries a `Cliente`, 28 distinct values, and **1060 of them (19%) have no
+entity** — COELCE 481, AMPLA 456, CGTF 48, NEOENERGIA 8, COSERN 8, ENEVA/MPX 5,
+ENPECEL 1. COELCE and AMPLA are the former names of ENEL CE and ENEL RJ and are
+deliberately not aliased, the same closed decision as in `mapping.yml`: the
+migrator must not decide that two client names are the same company. If the
+business decides otherwise, the fix is two names added to `entity_map.yml`, not
+code.
+
+**Spelling in the map is measured, not transcribed.** The source PDF uses an en
+dash ("ENEL RJ – Cabeamento"); Redmine and GLPI both use a plain hyphen, and
+matching is exact after `.strip()` + casefold, so the transcribed form would
+never have matched — 53 issues' worth. Re-sweep the live values before trusting
+any hand-edit of that file.
+
+Proven end to end 2026-08-12 with RDM 20438 → project 1286. Project,
+container-15 row, Faturamento task, container-26 row and all four documents read
+back with `entities_id: 70`; the re-run refused as already migrated, and
+`reset_migration.py` found the project in its new entity.
+
 **The `POST /Project` input carries the container-15 values** — see
 `project_create_payload` in [main.py](main.py). Container 15 is type "dom", so
 its fields belong to the Project's own form and the plugin validates its
@@ -435,8 +495,22 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
   issue 20238 — results are always filtered for exact equality.
 - Empty source values must be tested by falsiness, not `== ""`; real data has
   `null` where other issues have `""`.
-- `entities_id` is deliberately not sent: verified 2026-07-30 that GLPI places
-  the project in the session's active entity (75, TIVIT > SMART SYSTEMS).
+- **`entities_id` used to be deliberately omitted; since 2026-08-12 it is always
+  sent.** Verified 2026-07-30 that GLPI otherwise places the project in the
+  session's active entity, which is why every project migrated before that date
+  (1265–1283) sits in 75. Omitting the key is no longer safe: preflight now
+  moves the session to the root entity, so a missing `entities_id` would file
+  the project in entity 0 rather than in 75. See the entity section above.
+- **A Document must be born in the entity of the item it will hang off.**
+  Diagnosed 2026-08-12 on RDM 20438: the project went to entity 70 while the
+  session sat at the root, so `POST /Document` filed all four documents in
+  entity 0 with `is_recursive: 0` and every `POST /Document_Item` came back
+  `ERROR_GLPI_ADD "Você não tem permissão para executar essa ação."` — four
+  files uploaded, none linked, an empty Documentos tab. It reads exactly like
+  the 2026-08-07 rights problem and is not one. `upload_document` therefore
+  takes `entities_id` and `apply_attachments` passes the project's. Before
+  entities existed this was impossible: session, project and document were all
+  in 75.
 - `status_map.yml` must cover the trackers actually in scope. It was written for
   Projeto only, so when tracker 15 became a task the three Faturamento statuses
   (19 `NF Emitida`, 21 `NF Paga`, 22 `NF Solicitada`) were missing and 3036 of

@@ -41,6 +41,7 @@ from report.reporter import (  # noqa: E402
     SkippedChild,
 )
 from resolve.dropdowns import DropdownResolver  # noqa: E402
+from resolve.entities import EntityResolver  # noqa: E402
 from resolve.status import StatusResolver  # noqa: E402
 from resolve.users import UserResolver  # noqa: E402
 from store.db import STATUS_OK, MigrationStore  # noqa: E402
@@ -119,6 +120,48 @@ def run_preflight(
     """
     print(messages.PREFLIGHT_HEADER)
     print(messages.PREFLIGHT_SESSION_OK)
+
+    # Step 1b - widen the session to the whole entity tree (opened 2026-08-12).
+    # A HARD STOP, unlike the two warnings further down, and for a reason that
+    # is not about this project's own fields: a session restricted to its own
+    # branch cannot SEE a project filed in another entity, so check_already_
+    # migrated would answer "not migrated" for projects that exist and the run
+    # would duplicate them. Measured: the same marker gives 1 hit root-recursive
+    # and 0 hits from entity 75.
+    try:
+        glpi.set_active_entity_root()
+        entity_count = len(glpi.load_entities())
+    except ApiError as exc:
+        print(
+            messages.PREFLIGHT_ENTITY_SESSION_FAILED.format(
+                detail=messages.redact(exc)
+            )
+        )
+        return False
+    print(messages.PREFLIGHT_ENTITY_SESSION_OK.format(count=entity_count))
+
+    # Step 1c - the client -> entity map, plus the id cross-check. The check is
+    # a warning: resolution goes by name, so a differing id only means this is
+    # not the instance the spreadsheet was written against.
+    entity_resolver = EntityResolver(glpi)
+    print(
+        messages.PREFLIGHT_ENTITY_MAP_OK.format(
+            entities=entity_resolver.entity_count,
+            clients=entity_resolver.client_count,
+        )
+    )
+    mismatches = entity_resolver.crosscheck_ids()
+    if mismatches:
+        print(messages.PREFLIGHT_ENTITY_ID_MISMATCH.format(count=len(mismatches)))
+        for item in mismatches:
+            print(
+                messages.PREFLIGHT_ENTITY_ID_MISMATCH_LINE.format(
+                    completename=item.completename,
+                    id_teste=item.id_teste,
+                    resolved=item.resolved if item.resolved is not None else "—",
+                )
+            )
+        print(messages.PREFLIGHT_ENTITY_ID_MISMATCH_HINT)
 
     # Step 2 - Fields plugin rights. A missing right is a hard stop: without it
     # we would create projects with silently empty additional fields.
@@ -226,6 +269,7 @@ def build_project_plan(
         status_resolver=StatusResolver(),
         user_resolver=UserResolver(),
         dropdown_resolver=DropdownResolver(glpi),
+        entity_resolver=EntityResolver(glpi),
     )
     core, container15 = mapper.map_project(root_issue)
 
@@ -646,6 +690,11 @@ def _migrate_one_attachment(
                 local_path,
                 name=item.filename,
                 comment=_document_comment(item),
+                # The document has to be born in the same entity as the item it
+                # will hang off, or Document_Item is refused - see the docstring
+                # on upload_document. Every host of one plan (project, tasks)
+                # shares the project's entity, so one value covers them all.
+                entities_id=plan.core.payload.get("entities_id"),
             )
         except ApiError:
             item.outcome = AttachmentOutcome.FAILED_UPLOAD

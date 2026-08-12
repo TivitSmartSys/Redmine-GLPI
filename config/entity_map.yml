@@ -1,0 +1,223 @@
+# ---------------------------------------------------------------------------
+# Redmine `Cliente` -> GLPI entity (entities_id of the migrated Project).
+#
+# Source: "Mapeamento ClienteRedmine EntidadeGLPI -1.pdf", supplied by the
+# manager and confirmed with the sheet's author on 2026-08-12. Two rows were
+# read from the cell positions rather than from an adjacent label and are
+# confirmed as they stand: "ENERGISA" -> GRUPO NEOENERGIA > BRASIL (the cell
+# sits in that row) and "VALE" -> VALE > BRASIL (a cell merged down rows 53-59;
+# the top row is taken). Design: docs/superpowers/specs/2026-08-12-entity-mapping-design.md
+#
+# HOW THIS IS USED
+#   `completename` is the key, NOT `id_teste`. The id is resolved at preflight
+#   from GET /Entity, because the spreadsheet's ids belong to the TEST instance
+#   ("ID GLPI TESTE") and production will number the same tree differently. A
+#   hard-coded 4 would then file ENEL SP into some unrelated entity silently.
+#   `id_teste` is kept only as a cross-check: preflight WARNS when the resolved
+#   id differs, which is the signal "this instance is not the one in the sheet".
+#
+#   Verified live 2026-08-12: all 37 completenames below resolve on the test
+#   instance AND match their id_teste, 37/37. GET /Entity returns completename
+#   as "A > B > C", the exact form used here.
+#
+#   A client with no entry here is NOT an error: the project is created in
+#   DEFAULT_ENTITY_ID (75) and the report says why. Never invent an entity,
+#   never create one - rule 2 of CLAUDE.md.
+#
+# SPELLING IS MEASURED, NOT TRANSCRIBED
+#   Matching is exact after .strip() + casefold, so the dash matters. The PDF
+#   uses an en dash; Redmine and GLPI both use a plain hyphen. Every name below
+#   was swept from the live data (5594 tracker-14/42 issues, 2026-08-12) and
+#   spelled the way Redmine spells it. The issue counts in the comments come
+#   from that sweep and are there to make an accidental rename obvious.
+#
+#   All 5594 root issues carry a Cliente - none is empty. Of them, 1060 (19%)
+#   use a value with no entity here and will land in entity 75:
+#       COELCE 481, AMPLA 456, CGTF 48, NEOENERGIA 8, COSERN 8, ENEVA/MPX 5,
+#       ENPECEL 1, plus the two hyphen variants already covered below.
+#   COELCE and AMPLA are the former names of ENEL CE and ENEL RJ. They are
+#   deliberately NOT mapped, for the same reason they are not aliased in
+#   mapping.yml (closed decision 2026-08-03): the migrator must not decide that
+#   two client names are the same company. Raising it with the business is a
+#   separate call - if they say yes, add the names to entities 5 and 3 here.
+#
+#   The CEMIG block maps cleanly but no tracker-14/42 issue uses it: CEMIG lives
+#   on trackers 39/40, which are out of scope entirely. It is kept because the
+#   sheet defines it and because scope has moved before.
+# ---------------------------------------------------------------------------
+
+entities:
+  # -- Grupo Enel ----------------------------------------------------------
+  - completename: "TIVIT > GRUPO ENEL > BRASIL > ENEL RJ"
+    id_teste: 3
+    clients:
+      - "ENEL RJ"                      # 1101 issues
+      - "ENEL RJ - Cabeamento"         # 43 - plain hyphen, not the PDF's en dash
+
+  - completename: "TIVIT > GRUPO ENEL > BRASIL > ENEL SP"
+    id_teste: 4
+    clients: ["ENEL SP"]               # 836
+
+  - completename: "TIVIT > GRUPO ENEL > BRASIL > ENEL CE"
+    id_teste: 5
+    clients: ["ENEL CE"]               # 1066
+
+  - completename: "TIVIT > GRUPO ENEL > BRASIL > EGP BR"
+    id_teste: 6
+    clients: ["CDSA", "EGP", "GPG", "VGR"]   # 25, 142, 269, 1
+
+  - completename: "TIVIT > GRUPO ENEL > BRASIL > ENEL X"
+    id_teste: 7
+    clients: ["ENEL X"]                # 4
+
+  # -- Grupo Energisa / Neoenergia -----------------------------------------
+  - completename: "TIVIT > GRUPO ENERGISA > BRASIL > ENERGISA PARAIBA"
+    id_teste: 27
+    clients: ["ENERGISA PB"]           # unused by trackers 14/42
+
+  - completename: "TIVIT > GRUPO NEOENERGIA > BRASIL"
+    id_teste: 32
+    clients: ["ENERGISA"]              # unused; row confirmed with the author
+
+  - completename: "TIVIT > GRUPO NEOENERGIA > BRASIL > NEOENERGIA COELBA"
+    id_teste: 33
+    clients: ["COELBA"]                # unused
+
+  - completename: "TIVIT > GRUPO NEOENERGIA > BRASIL > NEOENERGIA ELEKTRO"
+    id_teste: 36
+    clients: ["ELEKTRO"]               # unused
+
+  # -- Vale ----------------------------------------------------------------
+  - completename: "TIVIT > VALE > BRASIL"
+    id_teste: 53
+    clients: ["VALE"]                  # 1
+
+  # -- Hydro ---------------------------------------------------------------
+  - completename: "TIVIT > HYDRO > BRASIL > PARAGOMINAS"
+    id_teste: 65
+    clients: ["PARAGOMINAS"]           # 27
+
+  - completename: "TIVIT > HYDRO > BRASIL > ALUNORTE"
+    id_teste: 66
+    clients: ["ALUNORTE"]              # 66
+
+  - completename: "TIVIT > HYDRO > BRASIL > ALBRAS"
+    id_teste: 67
+    clients: ["ALBRAS"]                # 68
+
+  - completename: "TIVIT > HYDRO > BRASIL > HCO BELEM"
+    id_teste: 109
+    clients: ["HCO BELEM"]             # 2
+
+  # -- Grupo Equatorial ----------------------------------------------------
+  - completename: "TIVIT > GRUPO EQUATORIAL > BRASIL > CELG"
+    id_teste: 70
+    clients:
+      - "ENEL GO"                      # 423
+      - "EQUATORIAL GO"                # 371
+      - "EQUATORIAL GO - Automação"    # 10 - plain hyphen
+
+  - completename: "TIVIT > GRUPO EQUATORIAL > BRASIL > RIO GRANDE SUL"
+    id_teste: 71
+    clients: ["EQUATORIAL SUL"]        # 19
+
+  # -- Cemig (trackers 39/40, out of scope - kept for completeness) ---------
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG D"
+    id_teste: 88
+    clients: ["CEMIG D"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG G CAMARCOS"
+    id_teste: 89
+    clients: ["CEMIG G CAMARCOS"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG G ITUTINGA"
+    id_teste: 90
+    clients: ["CEMIG G ITUTINGA"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG G LESTE"
+    id_teste: 91
+    clients: ["CEMIG G LESTE"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG G OESTE"
+    id_teste: 92
+    clients: ["CEMIG G OESTE"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG G POÇO FUNDO"
+    id_teste: 93
+    clients: ["CEMIG G POÇO FUNDO"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG G SUL"
+    id_teste: 94
+    clients: ["CEMIG G SUL"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG GT"
+    id_teste: 95
+    clients: ["CEMIG GT"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG PCH"
+    id_teste: 96
+    clients: ["CEMIG PCH"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG SIM"
+    id_teste: 97
+    clients: ["CEMIG SIM"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG TRADING"
+    id_teste: 98
+    clients: ["CEMIG TRADING"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_CENTRAL EÓLICA PARAJURU"
+    id_teste: 99
+    clients: ["CEMIG_CENTRAL EÓLICA PARAJURU"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_CENTRAL EOLICA VOLTA DO RIO"
+    id_teste: 100
+    clients: ["CEMIG_CENTRAL EOLICA VOLTA DO RIO"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_COMPANHIA TRANSMISSÃO CENTROOESTE DE MINAS"
+    id_teste: 101
+    clients: ["CEMIG_COMPANHIA TRANSMISSÃO CENTROOESTE DE MINAS"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_EMPRESA DE SERVIÇOS DE COMERCIALIZAÇÃO DE ENERGIA ELÉTRICA"
+    id_teste: 102
+    clients: ["CEMIG_EMPRESA DE SERVIÇOS DE COMERCIALIZAÇÃO DE ENERGIA ELÉTRICA"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_HORIZONTES ENERGIA"
+    id_teste: 103
+    clients: ["CEMIG_HORIZONTES ENERGIA"]
+
+  # The sheet spells this with an underscore, the GLPI Cliente dropdown with a
+  # space ("CEMIG ROSAL ENERGIA"). Neither appears on a tracker-14/42 issue, so
+  # both are listed rather than one of them guessed away.
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_ROSAL ENERGIA"
+    id_teste: 104
+    clients: ["CEMIG_ROSAL ENERGIA", "CEMIG ROSAL ENERGIA"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_SÁ CARVALHO"
+    id_teste: 105
+    clients: ["CEMIG_SÁ CARVALHO"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_SETE LAGOAS TRANSMISSORA DE ENERGIA"
+    id_teste: 106
+    clients: ["CEMIG_SETE LAGOAS TRANSMISSORA DE ENERGIA"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_UFV BOA ESPERANÇA"
+    id_teste: 107
+    clients: ["CEMIG_UFV BOA ESPERANÇA"]
+
+  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_UFV TRÊS MARIAS"
+    id_teste: 108
+    clients: ["CEMIG_UFV TRÊS MARIAS"]
+
+# Clients the sheet marks "Nao sera migrado" - deliberately no entity. The
+# project is still migrated, into DEFAULT_ENTITY_ID, and the report says the
+# entity was withheld on purpose rather than missing by accident.
+# "MS OPERAÇÕES" is spelled with a cedilla in the GLPI dropdown and without one
+# in the sheet; neither appears on a tracker-14/42 issue, so both are listed.
+nao_sera_migrado:
+  - "CIEN"              # 39 issues
+  - "ENDESA"            # 9
+  - "ENDESA ESPANHA"    # unused
+  - "MS OPERAÇÕES"      # unused
+  - "MS OPERACÕES"      # unused - sheet spelling
+  - "OUTRO"             # 65

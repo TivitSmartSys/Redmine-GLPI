@@ -102,6 +102,43 @@ PREFLIGHT_PROJECTTASK_RIGHT_MISSING = (
     "  Projetos sem Faturamento não são afetados — a migração continua."
 )
 
+# Entities (opened 2026-08-12). The failure below is a HARD STOP: a session
+# restricted to one branch cannot see projects filed elsewhere, so the rdmfield
+# check would report "not migrated" for projects that exist and the run would
+# duplicate them.
+PREFLIGHT_ENTITY_SESSION_OK = (
+    "[OK] Sessão ampliada para a árvore inteira de entidades ({count} entidades)."
+)
+
+PREFLIGHT_ENTITY_SESSION_FAILED = (
+    "[FALHA] Não foi possível ampliar a sessão para todas as entidades.\n"
+    "  Detalhe: {detail}\n"
+    "  Sem isso a sessão enxerga apenas a entidade ativa e suas filhas, e a "
+    "verificação de duplicatas\n"
+    "  (rdmfield) NÃO encontraria projetos gravados em outras entidades — a "
+    "migração criaria cópias."
+)
+
+PREFLIGHT_ENTITY_MAP_OK = (
+    "[OK] Mapa de entidades: {entities} entidade(s), {clients} cliente(s)."
+)
+
+PREFLIGHT_ENTITY_ID_MISMATCH = (
+    "[AVISO] O id da planilha não confere com esta instância em "
+    "{count} entidade(s):"
+)
+
+PREFLIGHT_ENTITY_ID_MISMATCH_LINE = (
+    "     {completename}: planilha {id_teste}, aqui {resolved}"
+)
+
+PREFLIGHT_ENTITY_ID_MISMATCH_HINT = (
+    "     Os ids da planilha são da instância de TESTE. A migração usa o nome "
+    "da entidade, não o id,\n"
+    "     portanto isto é apenas um aviso — confirme que o mapa continua "
+    "correto nesta instância."
+)
+
 PREFLIGHT_DROPDOWNS_LOADING = "[..] Carregando os dicionários de listas ({count} no total)…"
 
 PREFLIGHT_DROPDOWN_OK = "     [OK] {itemtype}: {count} valor(es)."
@@ -214,6 +251,10 @@ REPORT_SECTION_8 = "8. ANEXOS (Documentos do GLPI)"
 REPORT_SECTION_9 = "9. NOTAS (aba Notas do GLPI)"
 
 REPORT_PROJECT_LINE = 'Projeto GLPI: "{name}"'
+REPORT_ENTITY_LINE = "  Entidade: {completename} (id {entity_id}) ← Cliente “{client}”"
+REPORT_ENTITY_FALLBACK_LINE = (
+    "  Entidade: PADRÃO (id {entity_id}) — {reason}"
+)
 REPORT_ORIGIN_LINE = "  Origem: RDM {issue_id} (tracker {tracker_id} {tracker_name})"
 REPORT_TASKS_LINE = "  Tarefas a criar: {count}"
 REPORT_FATURAMENTO_LINE = (

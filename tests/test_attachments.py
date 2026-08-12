@@ -341,6 +341,7 @@ class FakeGlpi:
     def __init__(self, failing_uploads: set[str] | None = None):
         self.failing_uploads = failing_uploads or set()
         self.uploaded = []
+        self.upload_entities = []
         self.links = []
         self._next_id = 500
 
@@ -353,11 +354,13 @@ class FakeGlpi:
     def document_links(self, _itemtype, _items_id):
         return []
 
-    def upload_document(self, path, name, comment):
+    def upload_document(self, path, name, comment, entities_id=None):
         if name in self.failing_uploads:
             raise GlpiError("ERROR_GLPI_ADD")
         self._next_id += 1
         self.uploaded.append((name, comment))
+        # A document born in the wrong entity cannot be linked to its item.
+        self.upload_entities.append(entities_id)
         return self._next_id
 
     def link_document(self, document_id, itemtype, items_id):
@@ -404,6 +407,48 @@ def test_missing_host_is_reported_not_uploaded():
     assert files[0].outcome is AttachmentOutcome.NO_HOST
     assert glpi.uploaded == []
     assert plan.notes
+
+
+def test_document_is_uploaded_into_the_projects_entity():
+    """Regression, RDM 20438 -> project 1285 (2026-08-12).
+
+    The project moved to the entity of its Cliente while preflight left the
+    session in the root entity, so every document was created in entity 0 and
+    every POST /Document_Item came back "Você não tem permissão" - four files
+    uploaded, none linked, an empty Documentos tab. The document must be born
+    in the entity of the item it will hang off.
+    """
+    files = [
+        PlannedAttachment(attachment_id=1, issue_id=16467, filename="a.pdf", filesize=10,
+                          content_url="http://x/1", host_itemtype="Project",
+                          host_redmine_id=16467, host_label="Projeto RDM 16467"),
+    ]
+    plan = minimal_plan(files)
+    plan.core.payload["entities_id"] = 70
+    plan.glpi_ids = {16467: 1265}
+    glpi = FakeGlpi()
+
+    main.apply_attachments(glpi, FakeRedmine(), plan, FakeStore())
+
+    assert glpi.upload_entities == [70]
+    assert files[0].outcome is AttachmentOutcome.UPLOADED
+
+
+def test_upload_entity_is_none_when_the_plan_has_no_entity():
+    """A Mapper built without an entity resolver leaves no entities_id. The
+    upload then falls back to the session's entity, as it always did."""
+    files = [
+        PlannedAttachment(attachment_id=1, issue_id=16467, filename="a.pdf", filesize=10,
+                          content_url="http://x/1", host_itemtype="Project",
+                          host_redmine_id=16467, host_label="Projeto RDM 16467"),
+    ]
+    plan = minimal_plan(files)
+    plan.glpi_ids = {16467: 1265}
+    glpi = FakeGlpi()
+
+    main.apply_attachments(glpi, FakeRedmine(), plan, FakeStore())
+
+    assert glpi.upload_entities == [None]
 
 
 def test_document_comment_puts_the_marker_on_its_own_first_line():
