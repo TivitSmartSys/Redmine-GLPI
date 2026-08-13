@@ -19,6 +19,7 @@ from config.settings import (
     PLUGIN_TEXT_MAX_LENGTH,
     TRACKER_TO_PROJECTTASKTYPE,
 )
+from resolve import entities as entity_status
 
 DATE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2})")
 
@@ -138,11 +139,23 @@ def custom_field_index(issue: dict) -> dict[str, dict]:
 
 
 class Mapper:
-    def __init__(self, mapping: dict, status_resolver, user_resolver, dropdown_resolver):
+    def __init__(
+        self,
+        mapping: dict,
+        status_resolver,
+        user_resolver,
+        dropdown_resolver,
+        entity_resolver=None,
+    ):
         self._mapping = mapping
         self._status = status_resolver
         self._users = user_resolver
         self._dropdowns = dropdown_resolver
+        # Optional on purpose: without it the project carries no entities_id and
+        # behaves exactly as it did before 2026-08-12. Every caller that writes
+        # to GLPI passes one; the unit tests that only exercise field mapping
+        # do not have to know the entity map exists.
+        self._entities = entity_resolver
 
     # -- public API --------------------------------------------------------
 
@@ -248,9 +261,69 @@ class Mapper:
         container = self.map_section(issue, "container15", sweep=False)
 
         cf_index = custom_field_index(issue)
+        self._map_entity(cf_index, core)
+
         consumed = self._consumed_names(("project_core", "container15"))
         self._sweep_unmapped("project", cf_index, consumed, container)
         return core, container
+
+    def _map_entity(self, cf_index: dict[str, dict], core: MappingResult) -> None:
+        """`Cliente` -> entities_id on the project (opened 2026-08-12).
+
+        The record goes into `core`, so it is counted by the section-7 integrity
+        arithmetic like any other field. Note which outcomes are reachable here:
+        NEVER_WRITE is NOT one of them, even for the clients the spreadsheet
+        marks "Nao sera migrado". Those records live on a separate list that
+        all_records() deliberately excludes, so putting one in `core.records`
+        would leave the section-7 sum short of its total - breaking the single
+        number the report exists to guarantee. They are NO_COUNTERPART with a
+        detail that says the omission was deliberate.
+
+        `Cliente` is also read by container 15 as a plugin dropdown. Two records
+        for one source field is correct and intended: the integrity check counts
+        records, not distinct field names, and the two land in different GLPI
+        columns. `target_column` keeps them apart in the report.
+        """
+        if self._entities is None:
+            return
+
+        entry = cf_index.get(normalise_name("Cliente")) or {}
+        raw_value = coerce_text(entry.get("value"))
+        decision = self._entities.decide(raw_value)
+
+        outcome, detail = {
+            entity_status.STATUS_MAPPED: (Outcome.WRITTEN, ""),
+            entity_status.STATUS_EMPTY: (Outcome.EMPTY_SOURCE, "sem valor no Redmine"),
+            entity_status.STATUS_UNMAPPED: (
+                Outcome.NO_COUNTERPART,
+                "cliente sem entidade no mapa — projeto criado na entidade padrão",
+            ),
+            entity_status.STATUS_NOT_MIGRATED: (
+                Outcome.NO_COUNTERPART,
+                "cliente marcado “não será migrado” na planilha — entidade omitida "
+                "de propósito",
+            ),
+            entity_status.STATUS_UNRESOLVED: (
+                Outcome.UNRESOLVED,
+                "entidade do mapa não existe neste GLPI — projeto criado na "
+                "entidade padrão",
+            ),
+        }[decision.status]
+
+        # Always sent, including the fallback: preflight moves the session to the
+        # root entity, so an omitted key would file the project in entity 0.
+        core.payload["entities_id"] = decision.entity_id
+
+        core.records.append(
+            FieldRecord(
+                source_label="Cliente → Entidade",
+                outcome=outcome,
+                raw_value=raw_value,
+                target_column="entities_id",
+                written_value=decision.entity_id,
+                detail=detail or decision.completename,
+            )
+        )
 
     # -- internals ---------------------------------------------------------
 

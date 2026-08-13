@@ -189,6 +189,7 @@ class Reporter:
                 tracker_name=tracker.get("name") or "",
             )
         )
+        self._entity_line()
         self._add(messages.REPORT_TASKS_LINE.format(count=len(plan.tasks)))
         self._add(messages.REPORT_FATURAMENTO_LINE.format(count=len(plan.faturamento)))
 
@@ -295,6 +296,35 @@ class Reporter:
             }
             template = templates[planned.disposition]
             self._add(" " * (planned.depth * 2) + template.format(**fields))
+
+    def _entity_line(self) -> None:
+        """Where the project will be filed, and on whose authority.
+
+        Read back off the record the mapper produced rather than recomputed:
+        one source of truth for the entity, so the header can never disagree
+        with sections 2/3/4 about what happened. Silent when the plan carries no
+        entity record at all - a Mapper built without an entity resolver.
+        """
+        record = next(
+            (r for r in self._plan.core.records if r.target_column == "entities_id"),
+            None,
+        )
+        if record is None:
+            return
+        if record.outcome is Outcome.WRITTEN:
+            self._add(
+                messages.REPORT_ENTITY_LINE.format(
+                    completename=record.detail,
+                    entity_id=record.written_value,
+                    client=record.raw_value,
+                )
+            )
+        else:
+            self._add(
+                messages.REPORT_ENTITY_FALLBACK_LINE.format(
+                    entity_id=record.written_value, reason=record.detail
+                )
+            )
 
     def _section_no_counterpart(self) -> None:
         self._section(messages.REPORT_SECTION_2)

@@ -240,6 +240,15 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
 
+            # Since 2026-08-12 a project lives in the entity of its Cliente, so
+            # this script has to look at the whole tree for exactly the reason
+            # main.py does: a session left in its own branch cannot see - and
+            # therefore cannot clean up - anything filed elsewhere. Without it
+            # the diagnosis would read "nothing to reset" for a project that is
+            # very much there.
+            if glpi is not None:
+                glpi.set_active_entity_root()
+
             try:
                 tree_ids = collect_tree_ids(redmine, args.issue)
             except ApiError as exc:

@@ -478,7 +478,7 @@ class FakeGlpiWithDocuments(FakeGlpi):
             if t == itemtype and i == items_id
         ]
 
-    def upload_document(self, _path, name, comment):
+    def upload_document(self, _path, name, comment, entities_id=None):
         self._doc_id += 1
         return self._doc_id
 

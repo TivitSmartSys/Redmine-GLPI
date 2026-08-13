@@ -30,6 +30,7 @@ from config.settings import (
     DOCUMENT_MARKER_PREFIX,
     DOCUMENT_TYPE_FETCH_RANGE,
     DROPDOWN_FETCH_RANGE,
+    ENTITY_FETCH_RANGE,
     GLPI_RIGHT_CREATE,
     GLPI_RIGHT_UPDATE,
     GLPI_RIGHTNAME_DOCUMENT,
@@ -88,6 +89,8 @@ class GlpiClient:
         # "not loaded", which the report treats as "cannot warn", never as
         # "no extension is allowed".
         self._document_types: set[str] | None = None
+        # Entity tree, loaded once at preflight: {normalised completename: id}.
+        self._entity_cache: dict[str, int] | None = None
 
     # -- session -----------------------------------------------------------
 
@@ -296,6 +299,68 @@ class GlpiClient:
     def dropdown_cache_size(self, itemtype: str) -> int:
         return len(self._dropdown_cache.get(itemtype, {}))
 
+    # -- entities ----------------------------------------------------------
+
+    def set_active_entity_root(self) -> None:
+        """Widen the session to the whole entity tree, recursively.
+
+        Required by BOTH halves of the entity feature, and the second one is the
+        one that bites. Measured 2026-08-12: a fresh session is active in entity
+        75 and sees exactly three entities (75, 76, 77), so
+
+          - POST /Project with an entities_id outside that branch is refused;
+          - and searching for the rdmfield marker CANNOT SEE a project filed in
+            another entity. The same marker answered 1 hit root-recursive and
+            0 hits from entity 75.
+
+        The second point is why the caller treats a failure here as a hard stop:
+        a narrowed session does not break dedup loudly, it breaks it silently and
+        migrates a duplicate of every project that already exists elsewhere -
+        including every project migrated before this feature, all of which sit
+        in entity 75 while their client now points somewhere else.
+        """
+        self._request(
+            "POST",
+            "/changeActiveEntities",
+            json_body={"entities_id": 0, "is_recursive": True},
+        )
+
+    def load_entities(self) -> dict[str, int]:
+        """The whole entity tree, cached as {normalised completename: id}.
+
+        Keyed on `completename` ("TIVIT > GRUPO ENEL > BRASIL > ENEL SP",
+        verified 2026-08-12) rather than on `name`, because leaf names repeat
+        across the tree - BRASIL alone appears under nine different groups.
+
+        Needs `range` for the reason recorded on ENTITY_FETCH_RANGE: 98 rows,
+        15 without it.
+        """
+        if self._entity_cache is not None:
+            return self._entity_cache
+
+        rows = self._request("GET", "/Entity", params={"range": ENTITY_FETCH_RANGE})
+        entries: dict[str, int] = {}
+        for row in rows or []:
+            if not isinstance(row, dict):
+                continue
+            row_id = row.get("id")
+            completename = row.get("completename")
+            if row_id is None or not completename:
+                continue
+            entries.setdefault(self._lookup_key(completename), int(row_id))
+
+        self._entity_cache = entries
+        return entries
+
+    def resolve_entity(self, completename: str) -> int | None:
+        """completename -> id. None when there is no such entity.
+
+        Same policy as every other lookup here: never create, never guess.
+        """
+        if not completename:
+            return None
+        return self.load_entities().get(self._lookup_key(completename))
+
     # -- core objects ------------------------------------------------------
 
     def create_project(self, payload: dict) -> int:
@@ -467,7 +532,9 @@ class GlpiClient:
         rows = self._search(ITEMTYPE_DOCUMENT, {"searchText[comment]": marker})
         return [row for row in rows if _has_exact_marker(row.get("comment"), marker)]
 
-    def upload_document(self, path, name: str, comment: str) -> int:
+    def upload_document(
+        self, path, name: str, comment: str, entities_id: int | None = None
+    ) -> int:
         """POST /Document with the file itself. Returns the new document id.
 
         The legacy API takes an upload as multipart/form-data with a JSON
@@ -485,17 +552,31 @@ class GlpiClient:
         GLPI receives a body it cannot parse and reports an empty upload. That
         is why uploads do not go through _request().
 
-        entities_id is deliberately not sent, for the reason recorded in
-        config/settings.py: GLPI files the item in the session's active entity.
+        `entities_id` MUST be the entity of the item this document will be
+        linked to. Diagnosed 2026-08-12 on RDM 20438 -> project 1285: the
+        document is otherwise filed in the session's ACTIVE entity, which
+        preflight now sets to 0 (root), with is_recursive=0 - and then every
+        POST /Document_Item is refused with
+
+            ERROR_GLPI_ADD "Você não tem permissão para executar essa ação."
+
+        which reads exactly like the rights problem of 2026-08-07 and is not
+        one. All four files uploaded fine and none could be linked; the project
+        ended up with an empty Documentos tab. Before entities became a thing
+        this could not happen: session, project and document all sat in 75.
+
+        None keeps the old behaviour (the session's entity) for callers that
+        have no host entity to offer.
         """
         file_path = Path(path)
-        manifest = {
-            "input": {
-                "name": name,
-                "comment": comment,
-                "_filename": [file_path.name],
-            }
+        manifest_input = {
+            "name": name,
+            "comment": comment,
+            "_filename": [file_path.name],
         }
+        if entities_id is not None:
+            manifest_input["entities_id"] = int(entities_id)
+        manifest = {"input": manifest_input}
 
         with file_path.open("rb") as handle:
             files = {

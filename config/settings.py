@@ -173,15 +173,39 @@ MANDATORY_CONTAINER15_COLUMNS = (
 MANDATORY_CONTAINER26_COLUMNS: tuple[str, ...] = ()
 
 # ---------------------------------------------------------------------------
-# entities_id - spec 11.3, RESOLVED by observation on 2026-07-30.
+# entities_id - spec 11.3.
 #
-# We deliberately do not send entities_id. Verified on the first real write
-# (RDM 20238 -> Project 1265): GLPI placed the project in entity 75,
-# "TIVIT > SMART SYSTEMS", i.e. the API session's active entity, and the
-# container-15 row inherited the same entity. Set this constant and send the
-# key explicitly only if projects must land somewhere else.
+# HISTORY, because the rule reversed. Until 2026-08-12 the key was deliberately
+# NOT sent: verified on the first real write (RDM 20238 -> Project 1265) that
+# GLPI files the project in the API session's active entity, 75
+# "TIVIT > SMART SYSTEMS", and the container-15 row inherits it. Every project
+# migrated before that date (1265-1283) therefore sits in entity 75.
+#
+# CHANGED 2026-08-12: the project now goes to the entity of its `Cliente`, per
+# config/entity_map.yml. The key is sent on EVERY project, including the
+# fallback below - it is no longer safe to omit it, because preflight moves the
+# session to the root entity (see set_active_entity_root) and an omitted key
+# would file the project in entity 0 instead of 75.
+#
+# Verified live 2026-08-12 (GLPI 11.0.6) on a throwaway project purged the same
+# minute: POST /Project with entities_id=4 lands in entity 4, and both the
+# container-15 row and a ProjectTask under it inherit that entity.
 # ---------------------------------------------------------------------------
-OBSERVED_SESSION_ENTITY_ID = 75  # informational; not sent in any payload
+OBSERVED_SESSION_ENTITY_ID = 75  # the session's own entity; informational
+
+# Where a project goes when its Cliente has no entity in entity_map.yml - empty
+# value, a name outside the map (COELCE, AMPLA, CGTF...), or one the sheet marks
+# "Nao sera migrado". Same entity as before this feature existed, so an unmapped
+# project behaves exactly as it always did.
+DEFAULT_ENTITY_ID = 75
+
+# GET /Entity needs an explicit range like every other list read: the tree has
+# 98 rows on the test instance and GLPI answers with 15 without one, which would
+# silently drop two thirds of the dictionary.
+ENTITY_FETCH_RANGE = "0-999"
+
+# Filename of the client -> entity map, loaded with load_yaml().
+ENTITY_MAP_FILENAME = "entity_map.yml"
 
 # ---------------------------------------------------------------------------
 # Attachments -> GLPI Documents (spec section 3 left these out of v1; opened
