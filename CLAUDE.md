@@ -45,11 +45,11 @@ while the host project is alive; a project in the trash counts as orphaned.
 
 Exit codes: `0` ok, `1` failed/aborted, `2` configuration error.
 
-There is a pytest suite (`python -m pytest tests -q`, 121 tests) covering the
+There is a pytest suite (`python -m pytest tests -q`, 129 tests) covering the
 confirm gate, the summary figures, the VARCHAR(255) truncation, the client→entity
-map, and the attachment and note phases — host assignment, each section's own
-arithmetic, the line-anchored markers and apply degradation. There is no linter
-or build step.
+map, the CEMIG scope rules and the root-tracker guard, and the attachment and
+note phases — host assignment, each section's own arithmetic, the line-anchored
+markers and apply degradation. There is no linter or build step.
 Real
 verification is the dry-run against the test list in spec section 1a — notably
 `20238` (minimal), `18620` (out-of-scope child rule, tracker 41), and `20156`
@@ -406,23 +406,79 @@ migrated data (field names, values) is copied verbatim, never translated.
 
 ## Scope (closed decisions)
 
-In scope as migration roots: trackers **14** (Projeto) and **42** (Projeto
-Hydro). As tasks: 14, 42, **18** (Atividades) and **41** (Compras). Tracker
+In scope as migration roots: trackers **14** (Projeto), **42** (Projeto
+Hydro) and **39** (Projeto CEMIG). As tasks: 14, 42, **18** (Atividades),
+**41** (Compras) and **40** (Subtarefa Cemig). Tracker
 **15** (Faturamento) becomes a ProjectTask of type *Faturamento* on the **root**
 project — never nested under its Redmine parent — carrying a container-26 row;
-it is the only tracker that drives branching logic. Out of scope: **39** CEMIG
-and **40** Subtarefa Cemig (entirely). Attachments left phase two on 2026-08-10
-and are now migrated as GLPI Documents; notes followed on 2026-08-11 as GLPI
-Notepad rows — see both sections above. An
+it is the only tracker that drives branching logic. Attachments left phase two
+on 2026-08-10 and are now migrated as GLPI Documents; notes followed on
+2026-08-11 as GLPI Notepad rows; CEMIG followed on 2026-08-19 — see all three
+sections. An
 out-of-scope child is not created in GLPI; it gets an explicit report line, and
 its descendants are skipped too — its files and its notes are reported and left
 behind with it. Scope lives in `config/settings.py`
 (`IN_SCOPE_TASK_TRACKERS`, `IN_SCOPE_ROOT_TRACKERS`, `TRACKER_FATURAMENTO`,
-`TRACKER_ATIVIDADES`, `TRACKER_COMPRAS`, `TRACKER_TO_PROJECTTASKTYPE`).
+`TRACKER_ATIVIDADES`, `TRACKER_COMPRAS`, `TRACKER_PROJETO_CEMIG`,
+`TRACKER_SUBTAREFA_CEMIG`, `TRACKER_TO_PROJECTTASKTYPE`).
+
+**The root's tracker is checked since 2026-08-19** — `root_tracker_rejection`
+in [main.py](main.py), the last preflight step, riding on the Redmine
+reachability GET that was already being made. Before that `IN_SCOPE_ROOT_TRACKERS`
+was read by nothing but the web UI, so `--issue <anything>` built a plan for any
+tracker at all: `_classify` returns PROJECT for the root **before** it looks at
+the tracker, so a Faturamento or a dead tracker would quietly have become a
+project. Scope only ever policed children. It is the last step on purpose — a
+scope refusal must not mask a broken session or a missing right.
 
 Task types come from `TRACKER_TO_PROJECTTASKTYPE` (15 → 3 Faturamento, 18 → 4
-Atividade, 41 → 5 Compras). Trackers 14 and 42 deliberately have no entry, so an
-untyped task is reported as `NO_COUNTERPART` rather than as a lookup that failed.
+Atividade, 41 → 5 Compras, 40 → 6 Subtarefa Cemig). Trackers 14, 42 and 39
+deliberately have no entry, so an untyped task is reported as `NO_COUNTERPART`
+rather than as a lookup that failed.
+
+### CEMIG — trackers 39 and 40, in scope since 2026-08-19
+
+The exclusion had exactly one cause, spec 11.1: three of container 15's five
+mandatory columns have **no source on tracker 39** — `Valor do Projeto`,
+`Gestão` and `Responsável Cliente` do not exist on that tracker at all — so
+`POST /Project` would be refused with `ERROR_GLPI_ADD "Alguns campos
+obrigatórios estão vazios"`. Re-measured 2026-08-19 via `GET
+/PluginFieldsField`: **all 25 fields of container 15 carry `mandatory: 0`**, the
+same finding as the 2026-08-07 sweep. Proven the same day — RDM 19074 → project
+1292 was written with all three columns empty.
+
+**That single flag is the whole dependency.** Re-flag any of the five and
+tracker 39 becomes unmigratable; the fix is GLPI-side, because the migration
+cannot invent a value it has no source for. `MANDATORY_CONTAINER15_COLUMNS`
+stays populated so the dry-run keeps naming the three every time — and this is
+why `REPORT_SECTION_5_BLOCKING` is worded **conditionally**: that list is a
+hard-coded guard, not a live read, and CEMIG is the first tracker where the
+block ever fires. Claiming the project *will* be refused was a falsehood on all
+six CEMIG projects.
+
+Measured live 2026-08-19, and the numbers are small: tracker 39 has **6 issues,
+every one of them parentless**, with no relations at all — hence no Faturamento
+by either path. Tracker 40 has **49**, of which **35** hang off those six roots.
+The other 14 are unreachable and knowingly left behind, exactly like the 16
+orphan Compras: 8 have no parent, and 6 hang off issue **18575, which answers
+HTTP 403 to the API token** — a project the token cannot see, not missing data.
+
+Everything else was already in place and needed no code: statuses (15, 23, 14,
+16) were all in `status_map.yml`; `Cliente` is `CEMIG D` / `CEMIG GT`, both
+already in `entity_map.yml`; `Pendência` and `Tipo de Pendência` already had
+`mapping.yml` entries and full dictionary coverage. Two GLPI-side rows were
+added by hand: ProjectTaskType **6** `Subtarefa Cemig` (tracker 40 gets its own
+type rather than borrowing Atividade, so 35 subtasks stay distinguishable from
+tracker 18's 1259) and dictionary entry **30** `Gestão de Projeto` for `Tipo do
+Projeto` — note that the pre-existing entry 25 is `Engenharia + Gestão de
+Projeto`, a different value that exact-match comparison correctly refuses.
+`user_map.yml` gained `gabriel.figueiredo` (RDM 192 → GLPI 306), the assignee of
+three of the six.
+
+**39 is a root tracker only, 40 a task tracker only**, and the asymmetry is
+measured rather than assumed — no tracker-39 issue has a parent, so it never
+appears as a child. `tests/test_scope_cemig.py` pins it, because "add CEMIG to
+scope" reads like it means both sets.
 
 Compras is a task tracker only, never a root. Of its 72 issues, 56 hang directly
 off a tracker-14 or tracker-42 root and are migrated; the other **16 have no
@@ -612,10 +668,15 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
 
 ## Open points before production (spec 11)
 
-Five container-15 columns are flagged mandatory
-(`MANDATORY_CONTAINER15_COLUMNS`); missing ones **refuse the project**, and the
-dry-run report surfaces them. Tracker 14 covers all five; tracker 39 does not —
-unresolved, and one reason 39 stays out of scope.
+Five container-15 columns are listed in `MANDATORY_CONTAINER15_COLUMNS`; while
+GLPI has them flagged, missing ones **refuse the project**, and the dry-run
+report surfaces them. Tracker 14 covers all five. **Tracker 39 covers two** —
+it has no `Valor do Projeto`, `Gestão` or `Responsável Cliente` at all — which
+was the sole reason CEMIG stayed out of scope until 2026-08-19. It is in scope
+now because the live flags read `mandatory: 0`, not because the data appeared:
+the six CEMIG projects are written with those three columns empty. See the CEMIG
+section under Scope; this is the one open point that would close the tracker
+again if an admin re-flagged it.
 
 `MANDATORY_CONTAINER26_COLUMNS` is **empty since 2026-08-07**: a sweep of
 `GET /PluginFieldsField` found `mandatory: 0` on every field of container 26 —

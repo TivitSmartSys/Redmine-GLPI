@@ -9,9 +9,9 @@ Twoim zadaniem jest zbudowanie aplikacji migrującej projekty z Redmine do GLPI 
 ## Zasady nadrzędne
 
 1. **Nie zgaduj.** Pola i sekcje oznaczone `DO WERYFIKACJI` zostaw jako `TODO` z komentarzem w kodzie — nie wymyślaj dla nich rozwiązań. Jeśli czegoś nie ma w specyfikacji, zapytaj mnie, zamiast zakładać.
-2. **Nie implementuj CEMIG (tracker 39) ani Subtarefa Cemig (tracker 40).** Są całkowicie poza zakresem.
-3. **Nie implementuj załączników.** Druga faza.
-4. **Nie implementuj trackera 18 (Atividades)** jako osobnej migracji. Jako dziecko projektu podlega regule „dziecko spoza zakresu → pomiń + raport".
+2. ~~**Nie implementuj CEMIG (tracker 39) ani Subtarefa Cemig (tracker 40).**~~ **NIEAKTUALNE od 2026-08-19 — CEMIG jest w zakresie.** Powodem wykluczenia był wyłącznie bloker z sekcji 11.1: tracker 39 nie ma trzech z pięciu obowiązkowych kolumn kontenera 15, więc `POST /Project` byłby odrzucony. Odczyt na żywo 2026-08-19 pokazał `mandatory: 0` na wszystkich 25 polach kontenera 15 i RDM 19074 zapisał się jako projekt 1292 z tymi trzema kolumnami pustymi. 39 jest trackerem **wyłącznie root**, 40 **wyłącznie zadaniem** (zmierzone: żaden issue trackera 39 nie ma rodzica). Szczegóły w CLAUDE.md, sekcja „CEMIG".
+3. ~~**Nie implementuj załączników.**~~ **NIEAKTUALNE od 2026-08-10** — załączniki migrują jako Dokumenty GLPI, notatki od 2026-08-11 jako wiersze Notepad.
+4. ~~**Nie implementuj trackera 18 (Atividades)** jako osobnej migracji.~~ **NIEAKTUALNE od 2026-08-06** — 18 i 41 są zadaniami z własnym typem w GLPI. Jako root nadal nie występują.
 5. **Dry-run jest domyślny.** Zapis do GLPI wyłącznie po jawnej fladze `--apply` i po wyświetleniu pełnego raportu planu.
 
 ## Język

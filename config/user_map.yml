@@ -17,6 +17,11 @@ users:
   156: {glpi_id: 12,   login: "daniel.honorato"}
   128: {glpi_id: 60,   login: "david.sales"}
   195: {glpi_id: 68,   login: "desirene.costa"}
+  # Added 2026-08-19 with CEMIG entering scope: he is the assignee of three of
+  # the six tracker-39 projects (18729, 18721, 18713). GLPI id read live from
+  # search/User - the login matches exactly, and none of the ten other
+  # "gabriel.*" accounts does.
+  192: {glpi_id: 306,  login: "gabriel.figueiredo"}
   84:  {glpi_id: 66,   login: "genna.lima"}
   174: {glpi_id: 172,  login: "giullian.barbosa"}
   94:  {glpi_id: 70,   login: "guilherme.coelho"}

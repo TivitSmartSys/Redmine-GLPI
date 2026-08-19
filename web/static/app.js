@@ -236,9 +236,22 @@ function renderSummary(summary) {
     )
   );
 
+  // summary.missing_mandatory is deliberately NOT badged here (removed
+  // 2026-08-19). Its badge read "bloqueia a gravação", which GLPI stopped doing
+  // when every field of container 15 went to mandatory = 0 - measured on the
+  // 2026-08-07 sweep and again on 2026-08-19, and proven by writing RDM 19074
+  // to project 1292 with all three of tracker 39's empty columns. The badge
+  // never fired before CEMIG entered scope (tracker 14 fills all five), so the
+  // claim went unnoticed; on the six CEMIG projects it was a red "do not run
+  // this" on every single one.
+  //
+  // The count itself is still in the summary payload and the three columns are
+  // still named in section 5 of the full report, worded conditionally. If GLPI
+  // ever re-flags them, that section is where it shows - do not restore this
+  // badge without making it read the live flag instead of the hard-coded
+  // MANDATORY_CONTAINER15_COLUMNS guard list.
   const warnings = [
     [summary.unresolved, UI.UI_WARN_UNRESOLVED, "warning"],
-    [summary.missing_mandatory, UI.UI_WARN_MANDATORY, "critical"],
     [summary.missing_mandatory_faturamento, UI.UI_WARN_MANDATORY_FATURAMENTO, "warning"],
     [summary.skipped_children, UI.UI_WARN_SKIPPED, "warning"],
     [summary.tree_failures, UI.UI_WARN_FAILURES, "critical"],

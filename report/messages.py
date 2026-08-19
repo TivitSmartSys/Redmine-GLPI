@@ -184,6 +184,19 @@ PREFLIGHT_REDMINE_FAILED = (
     "  Verifique REDMINE_URL e REDMINE_API_KEY."
 )
 
+# The scope of the ROOT was, until 2026-08-19, checked nowhere at all:
+# IN_SCOPE_ROOT_TRACKERS was read only by the web UI, so `--issue <qualquer
+# coisa>` built a plan for any tracker whatsoever - a Faturamento, a task, a
+# dead tracker - and the tree walk turned it into a Project because the root
+# always becomes one. The children were the only thing scope ever policed.
+PREFLIGHT_ROOT_TRACKER_OUT_OF_SCOPE = (
+    "[FALHA] O issue {issue_id} é do tracker {tracker_id} {tracker_name!r}, "
+    "que não pode ser a raiz de uma migração.\n"
+    "  Trackers aceitos como raiz: {allowed}.\n"
+    "  Um tracker de tarefa (18, 40, 41) ou de Faturamento (15) só é migrado "
+    "como parte da árvore de um projeto."
+)
+
 PREFLIGHT_PASSED = "== Preflight concluído com sucesso. =="
 
 PREFLIGHT_ABORTED = "== Preflight falhou. Nada foi gravado. =="
@@ -285,8 +298,22 @@ REPORT_SECTION_5_INTRO = (
 # REFUSES the project (the ERROR_GLPI_ADD failure of 2026-08-04). Container 26
 # is written straight to the container itemtype over REST, a path that never
 # reaches validateValues(), so a missing value only leaves the row incomplete.
+#
+# The wording is CONDITIONAL since 2026-08-19, and the reason is worth keeping.
+# MANDATORY_CONTAINER15_COLUMNS is a hard-coded guard, not a live read of the
+# plugin's flags, and the flags have been 0 since the 2026-08-07 sweep. Until
+# CEMIG entered scope this block never fired in practice - tracker 14 fills all
+# five columns - so nobody had to notice the difference. Tracker 39 has no
+# source for three of them, and RDM 19074 was written to GLPI project 1292 that
+# day with all three empty. Stating "the project WILL be refused" would have
+# been a flat falsehood on every one of the six CEMIG projects, and the kind
+# that stops someone from running --apply at all.
 REPORT_SECTION_5_BLOCKING = (
-    "  Container 15 (projeto) — a gravação do PROJETO é recusada sem estes dados:"
+    "  Container 15 (projeto) — se o GLPI mantiver estas colunas marcadas como "
+    "obrigatórias,\n"
+    "  o próprio PROJETO é recusado (ERROR_GLPI_ADD). Última verificação: "
+    "mandatory = 0 em\n"
+    "  todas elas, ou seja, o projeto é gravado com estes campos vazios:"
 )
 REPORT_NO_SOURCE = "(sem origem no Redmine)"
 REPORT_MANDATORY_UNMAPPED = (
@@ -747,8 +774,11 @@ UI_CARD_IGNORED = "Campos ignorados"
 UI_CARD_UNRESOLVED = "Não resolvidos"
 
 UI_WARN_UNRESOLVED = "{count} referência(s) não resolvida(s)"
-# "critical" in the UI: these refuse the POST /Project outright.
-UI_WARN_MANDATORY = "{count} campo(s) obrigatório(s) sem dados — bloqueia a gravação"
+# UI_WARN_MANDATORY was here until 2026-08-19: "{count} campo(s) obrigatório(s)
+# sem dados — bloqueia a gravação", shown as a critical badge. GLPI does not
+# block: every field of container 15 reads mandatory = 0. Deleted rather than
+# reworded because the count is already in the summary payload and section 5 of
+# the report names the columns properly. See the comment in web/static/app.js.
 # "warning": the container-26 row is written anyway, just incomplete.
 UI_WARN_MANDATORY_FATURAMENTO = (
     "{count} campo(s) obrigatório(s) do Faturamento sem dados"
