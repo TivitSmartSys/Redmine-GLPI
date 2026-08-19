@@ -24,6 +24,7 @@ from clients.redmine import RedmineClient  # noqa: E402
 from config.settings import (  # noqa: E402
     DEFAULT_DB_PATH,
     DOCUMENT_MARKER_PREFIX,
+    IN_SCOPE_ROOT_TRACKERS,
     ITEMTYPE_DOCUMENT,
     ITEMTYPE_FATURAMENTO,
     ITEMTYPE_NOTEPAD,
@@ -242,14 +243,49 @@ def run_preflight(
 
     # Redmine reachability, checked against the issue actually requested.
     try:
-        redmine.fetch_issue(issue_id, include=())
+        root_issue = redmine.fetch_issue(issue_id, include=())
     except ApiError as exc:
         print(messages.PREFLIGHT_REDMINE_FAILED.format(detail=messages.redact(exc)))
         return False
     print(messages.PREFLIGHT_REDMINE_OK.format(issue_id=issue_id))
 
+    # Scope of the ROOT (added 2026-08-19). It rides on the reachability GET
+    # above rather than making one of its own, and it is deliberately the LAST
+    # preflight step: a scope refusal must not hide a broken session or a
+    # missing right, which the user has to fix first anyway.
+    rejection = root_tracker_rejection(root_issue)
+    if rejection:
+        print(rejection)
+        return False
+
     print(messages.PREFLIGHT_PASSED)
     return True
+
+
+def root_tracker_rejection(issue: dict) -> str | None:
+    """None when this issue may start a migration, else the PT-BR refusal.
+
+    Scope used to be policed for children only - `transform.tree` skips a child
+    whose tracker is out of scope - while the root became a Project whatever it
+    was, because `_classify` returns PROJECT for the root before it looks at the
+    tracker at all. IN_SCOPE_ROOT_TRACKERS existed and was read by nothing but
+    the web UI.
+
+    A separate function rather than four lines inline: this is the one piece of
+    preflight that is pure, and the difference between "root tracker" and "task
+    tracker" is exactly the kind of rule that gets flattened by a later reader
+    who sees 40 in one set and assumes it belongs in both.
+    """
+    tracker = issue.get("tracker") or {}
+    tracker_id = tracker.get("id")
+    if tracker_id in IN_SCOPE_ROOT_TRACKERS:
+        return None
+    return messages.PREFLIGHT_ROOT_TRACKER_OUT_OF_SCOPE.format(
+        issue_id=issue.get("id"),
+        tracker_id=tracker_id if tracker_id is not None else "—",
+        tracker_name=tracker.get("name") or "",
+        allowed=", ".join(str(item) for item in sorted(IN_SCOPE_ROOT_TRACKERS)),
+    )
 
 
 def build_project_plan(

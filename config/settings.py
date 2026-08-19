@@ -88,13 +88,14 @@ TRACKER_ATIVIDADES = 18
 # Redmine tracker 41 "Compras" - migrated as a ProjectTask of type Compras.
 TRACKER_COMPRAS = 41
 
+# Redmine trackers 39 "Projeto CEMIG" and 40 "Subtarefa Cemig", in scope since
+# 2026-08-19. See the block above IN_SCOPE_TASK_TRACKERS for why they were out.
+TRACKER_PROJETO_CEMIG = 39
+TRACKER_SUBTAREFA_CEMIG = 40
+
 # Trackers allowed to become a GLPI ProjectTask when found as a descendant.
 # Everything else falls under the "child out of scope -> skip + report" rule
 # (spec section 1a, decision variant c, closed in v1.5).
-#
-# Deliberately absent:
-#   39 Projeto CEMIG    - entirely out of scope
-#   40 Subtarefa Cemig  - child of CEMIG projects only, out of scope
 #
 # 18 Atividades moved OUT of phase two on 2026-08-06: GLPI now has a
 # ProjectTaskType "Atividade", so the 1259 issues become typed tasks.
@@ -108,27 +109,65 @@ TRACKER_COMPRAS = 41
 # are knowingly left unmigrated - Compras is a task tracker, never a root (its
 # seven custom fields do not fit container 15 and the five mandatory columns
 # would be empty, which GLPI would reject).
-IN_SCOPE_TASK_TRACKERS = frozenset({14, 42, 18, 41})
+#
+# 40 Subtarefa Cemig joined on 2026-08-19, with 39 as a root (below). CEMIG was
+# out of scope since 2026-07-24 for one reason, recorded in spec 11.1: three of
+# container 15's five mandatory columns have NO SOURCE on tracker 39 - `Valor do
+# Projeto`, `Gestão` and `Responsável Cliente` do not exist on that tracker at
+# all - so POST /Project would be refused with ERROR_GLPI_ADD "Alguns campos
+# obrigatórios estão vazios". Re-measured live 2026-08-19 via GET
+# /PluginFieldsField: all 25 fields of container 15 carry mandatory=0, which is
+# the same finding as the 2026-08-07 sweep. The refusal no longer happens.
+#
+# THAT IS THE WHOLE DEPENDENCY. Should anyone re-flag one of those five columns,
+# tracker 39 stops being migratable and the fix is GLPI-side - the migration
+# cannot invent values it has no source for. MANDATORY_CONTAINER15_COLUMNS stays
+# populated precisely so the dry-run keeps naming the three every time.
+#
+# Measured live 2026-08-19: tracker 40 has 49 issues, 35 of them hanging off the
+# six tracker-39 roots. The other 14 are unreachable and knowingly left behind,
+# exactly like the 16 orphan Compras - 8 have no parent, and 6 hang off issue
+# 18575, which answers HTTP 403 to the API token. Their two custom fields
+# (Pendência, Tipo de Pendência) have no column in glpi_projecttasks and reach
+# the spec-9.4 comment dump, as Atividades and Compras do.
+IN_SCOPE_TASK_TRACKERS = frozenset({14, 42, 18, 41, 40})
 
 # Trackers accepted as a migration root. Atividades is a task-only tracker -
 # it is never a root, only a descendant.
-IN_SCOPE_ROOT_TRACKERS = frozenset({14, 42})
+#
+# 39 is the mirror image: a ROOT tracker only, deliberately absent from the task
+# set above. Measured live 2026-08-19 - all six tracker-39 issues have no parent
+# whatsoever, so it never appears as a child, and adding it to both sets would
+# be a guess rather than a reading of the data. tests/test_scope_cemig.py pins
+# the asymmetry, because "add CEMIG to scope" reads like it means both sets.
+#
+# Read by run_preflight since 2026-08-19 (root_tracker_rejection in main.py).
+# Before that this set was consulted by nothing but the web UI, so `--issue`
+# accepted any tracker at all and the tree walk made a Project out of it.
+IN_SCOPE_ROOT_TRACKERS = frozenset({14, 42, 39})
 
 # ---------------------------------------------------------------------------
-# glpi_projecttasktypes - verified live 2026-08-06, the full table being
+# glpi_projecttasktypes - re-read live 2026-08-19, the full table being
 #   1 Deslocamento, 2 Manutenção Preventiva, 3 Faturamento, 4 Atividade,
-#   5 Compras
+#   5 Compras, 6 Subtarefa Cemig
 # Only trackers listed here get a type; 14 and 42 deliberately get none, so an
 # untyped task reads as intentional rather than as a failed lookup.
+#
+# Row 6 was created by hand in GLPI on 2026-08-19 and its id read back rather
+# than assumed - tracker 40 gets a type of its own instead of borrowing
+# Atividade (4), so the 35 CEMIG subtasks stay distinguishable from the 1259
+# issues of tracker 18.
 # ---------------------------------------------------------------------------
 PROJECTTASKTYPE_FATURAMENTO = 3
 PROJECTTASKTYPE_ATIVIDADE = 4
 PROJECTTASKTYPE_COMPRAS = 5
+PROJECTTASKTYPE_SUBTAREFA_CEMIG = 6
 
 TRACKER_TO_PROJECTTASKTYPE = {
     TRACKER_FATURAMENTO: PROJECTTASKTYPE_FATURAMENTO,
     TRACKER_ATIVIDADES: PROJECTTASKTYPE_ATIVIDADE,
     TRACKER_COMPRAS: PROJECTTASKTYPE_COMPRAS,
+    TRACKER_SUBTAREFA_CEMIG: PROJECTTASKTYPE_SUBTAREFA_CEMIG,
 }
 
 # ---------------------------------------------------------------------------

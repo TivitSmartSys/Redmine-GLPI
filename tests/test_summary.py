@@ -72,8 +72,11 @@ def build_plan() -> ProjectPlan:
         tasks=[task],
         faturamento=[invoice],
         skipped_children=[
-            SkippedChild(issue_id=19073, tracker_id=39, tracker_name="Projeto CEMIG",
-                         subject="CEMIG", reason="tracker fora do escopo")
+            # Tracker 30 is one of the dead ones (spec 1a). It used to be 39
+            # "Projeto CEMIG", which entered scope on 2026-08-19 and would now
+            # read as an example of something that is no longer skipped.
+            SkippedChild(issue_id=19073, tracker_id=30, tracker_name="Chamado",
+                         subject="Fora do escopo", reason="tracker fora do escopo")
         ],
         tree_cycles=[123],
     )
