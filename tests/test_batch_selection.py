@@ -49,3 +49,14 @@ def test_iter_all_rows_returns_empty_when_itemtype_has_no_rows():
     client = client_returning([[]])
 
     assert client.iter_all_rows("Project") == []
+
+
+def test_iter_all_rows_survives_a_page_longer_than_requested():
+    """A server that ignores `range` must not spin the loop forever."""
+    oversized = [{"id": n} for n in range(250)]
+    client = client_returning([oversized, []])
+
+    rows = client.iter_all_rows("Project", page_size=200)
+
+    assert len(rows) == 250
+    assert client.calls[1][1] == "250-449"

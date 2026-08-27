@@ -462,7 +462,10 @@ class GlpiClient:
             rows.extend(page)
             if len(page) < page_size:
                 break
-            start += page_size
+            # Advance by rows received, not requested: if GLPI ignores the
+            # range header and returns more than page_size rows, we must skip
+            # them on the next iteration to avoid an infinite loop of duplicates.
+            start += len(page)
         return rows
 
     def get_item(self, itemtype: str, item_id: int) -> dict | None:
