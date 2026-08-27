@@ -60,3 +60,77 @@ def test_iter_all_rows_survives_a_page_longer_than_requested():
 
     assert len(rows) == 250
     assert client.calls[1][1] == "250-449"
+
+
+from batch.selection import (  # noqa: E402
+    REDMINE_PROJECTS,
+    candidate_roots,
+    migrated_markers,
+    pending_roots,
+)
+
+
+class MarkerGlpi:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def iter_all_rows(self, itemtype, page_size=200):
+        return list(self._rows)
+
+
+class FakeRedmine:
+    def __init__(self, issues):
+        self._issues = issues
+
+    def iter_issues(self, tracker_id, page_size=100):
+        for issue in self._issues:
+            if issue["tracker"]["id"] == tracker_id:
+                yield issue
+
+
+def issue(iid, tracker=14, parent=None):
+    row = {"id": iid, "tracker": {"id": tracker}}
+    if parent:
+        row["parent"] = {"id": parent}
+    return row
+
+
+def test_markers_are_read_in_one_bulk_pass_and_only_numeric_ones_count():
+    glpi = MarkerGlpi([
+        {"items_id": 100, "rdmfield": "17343"},
+        {"items_id": 101, "rdmfield": "RDM123"},
+        {"items_id": 102, "rdmfield": ""},
+        {"items_id": 103, "rdmfield": "  20438  "},
+    ])
+
+    assert migrated_markers(glpi) == {17343, 20438}
+
+
+def test_candidates_are_parentless_roots_of_that_tracker_only():
+    redmine = FakeRedmine([
+        issue(1), issue(2, parent=1), issue(3), issue(4, tracker=42),
+    ])
+
+    assert candidate_roots(redmine, 14) == [1, 3]
+
+
+def test_pending_subtracts_the_markers():
+    glpi = MarkerGlpi([{"items_id": 100, "rdmfield": "3"}])
+    redmine = FakeRedmine([issue(1), issue(2), issue(3)])
+
+    assert pending_roots(glpi, redmine, 14) == [1, 2]
+
+
+def test_limit_takes_the_first_n_only():
+    glpi = MarkerGlpi([])
+    redmine = FakeRedmine([issue(1), issue(2), issue(3)])
+
+    assert pending_roots(glpi, redmine, 14, limit=2) == [1, 2]
+
+
+def test_the_three_redmine_projects_map_to_their_root_trackers():
+    assert REDMINE_PROJECTS == {
+        "projetos-telecom": 14,
+        "hydro": 42,
+        "operacao-cemig": 39,
+    }
