@@ -800,7 +800,7 @@ PURGE_ITEM_FAILED = (
 )
 PURGE_SUMMARY = (
     "Removidos {projects} projetos, {containers} linhas de container, "
-    "{tasks} tarefas, {notes} notas, {links} vínculos de documento. Falhas: {failed}."
+    "{notes} notas, {links} vínculos de documento. Falhas: {failed}."
 )
 PURGE_VERIFY_OK = (
     "Verificação: restam {projects} projetos e {containers} linhas de container 15, "

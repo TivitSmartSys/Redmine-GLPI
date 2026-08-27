@@ -19,9 +19,13 @@ Dry-run by default, like every other writer in this repo.
 from __future__ import annotations
 
 import argparse
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
-from config.settings import ITEMTYPE_ADDITIONAL_FIELDS
+from clients.errors import ApiError
+from clients.glpi import GlpiClient
+from config.settings import ConfigError, ITEMTYPE_ADDITIONAL_FIELDS, load_settings
 from report import messages
 
 # Projects created on this date belong to the poisoned bulk import.
@@ -158,3 +162,163 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--yes", action="store_true", help=messages.CLI_HELP_PURGE_YES)
     parser.add_argument("--report", default=None, help=messages.CLI_HELP_PURGE_REPORT)
     return parser
+
+
+@dataclass
+class PurgeCounts:
+    projects: int = 0
+    containers: int = 0
+    notes: int = 0
+    links: int = 0
+    failed: int = 0
+
+    def add(self, other: "PurgeCounts") -> None:
+        self.projects += other.projects
+        self.containers += other.containers
+        self.notes += other.notes
+        self.links += other.links
+        self.failed += other.failed
+
+
+def purge_one(glpi, target: PurgeTarget) -> PurgeCounts:
+    """Remove one project and everything hanging off it.
+
+    ORDER IS LOAD-BEARING AND INVERTED FROM THE OBVIOUS ONE. The container-15
+    row goes first, the project last. A plugin container row outlives its host
+    project (this is why reset_migration.py exists), so a failure after the
+    project is gone strands the marker - the very poison being removed. Failing
+    the other way round leaves a project with no marker, which is recoverable.
+    """
+    counts = PurgeCounts()
+
+    def drop(itemtype: str, row_id: int) -> bool:
+        try:
+            glpi.delete_item(itemtype, row_id, force_purge=True)
+        except ApiError as exc:
+            print(
+                messages.PURGE_ITEM_FAILED.format(
+                    itemtype=itemtype, row_id=row_id,
+                    project_id=target.project_id, detail=messages.redact(exc),
+                ),
+                file=sys.stderr,
+            )
+            counts.failed += 1
+            return False
+        print(
+            messages.PURGE_ROW_DELETED.format(
+                itemtype=itemtype, row_id=row_id, project_id=target.project_id
+            )
+        )
+        return True
+
+    for row_id in target.container_row_ids:
+        if not drop(ITEMTYPE_ADDITIONAL_FIELDS, row_id):
+            # Stop before the project: leaving a live project with a stranded
+            # marker is strictly worse than leaving both in place.
+            return counts
+        counts.containers += 1
+
+    for note in glpi.notepad_rows("Project", target.project_id):
+        if drop("Notepad", int(note["id"])):
+            counts.notes += 1
+
+    for link in glpi.document_links("Project", target.project_id):
+        if drop("Document_Item", int(link["id"])):
+            counts.links += 1
+
+    if drop("Project", target.project_id):
+        counts.projects += 1
+    return counts
+
+
+def verify_purge(glpi) -> tuple[int, int]:
+    """Re-read the two counts that prove the cleanup worked.
+
+    The purge is not finished without this: it is the read that proves dedup is
+    no longer poisoned. Returns (projects remaining, container-15 rows
+    remaining).
+    """
+    projects = glpi.iter_all_rows("Project")
+    containers = glpi.iter_all_rows(ITEMTYPE_ADDITIONAL_FIELDS)
+    return len(projects), len(containers)
+
+
+EXIT_OK = 0
+EXIT_FAILED = 1
+EXIT_CONFIG = 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+        except (AttributeError, ValueError):  # pragma: no cover
+            pass
+
+    args = build_parser().parse_args(argv)
+    try:
+        settings = load_settings()
+    except ConfigError as exc:
+        print(messages.CONFIG_MISSING_VARS.format(names=str(exc)), file=sys.stderr)
+        return EXIT_CONFIG
+    messages.register_secrets(settings.secret_values())
+
+    try:
+        with GlpiClient(
+            settings.glpi_url, settings.glpi_user_token, settings.glpi_app_token
+        ) as glpi:
+            try:
+                targets = build_purge_plan(glpi)
+            except KeepListViolation as exc:
+                print(messages.PURGE_KEEP_VIOLATION.format(detail=exc), file=sys.stderr)
+                return EXIT_FAILED
+
+            report = render_purge_report(targets, applied=False)
+            print(report)
+
+            if not targets:
+                print(messages.PURGE_NOTHING_TO_DO)
+                return EXIT_OK
+            if not args.apply:
+                return EXIT_OK
+            if not (args.yes or confirm_purge(len(targets))):
+                print(messages.PURGE_CANCELLED)
+                return EXIT_OK
+
+            totals = PurgeCounts()
+            for target in targets:
+                totals.add(purge_one(glpi, target))
+
+            print()
+            print(messages.PURGE_SUMMARY.format(
+                projects=totals.projects, containers=totals.containers,
+                notes=totals.notes, links=totals.links, failed=totals.failed,
+            ))
+
+            projects_left, containers_left = verify_purge(glpi)
+            expected = len(KEEP_PROJECT_IDS)
+            ok = projects_left == expected
+            print(
+                (messages.PURGE_VERIFY_OK if ok else messages.PURGE_VERIFY_FAILED).format(
+                    projects=projects_left, containers=containers_left,
+                    expected_projects=expected,
+                )
+            )
+
+            path = Path(args.report or "reports/purge-record.txt")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                render_purge_report(targets, applied=True), encoding="utf-8"
+            )
+            print(messages.PURGE_REPORT_SAVED.format(path=path))
+            return EXIT_OK if ok else EXIT_FAILED
+    except ApiError as exc:
+        print(messages.redact(exc), file=sys.stderr)
+        return EXIT_FAILED
+    except KeyboardInterrupt:
+        print(messages.CLI_INTERRUPTED, file=sys.stderr)
+        return EXIT_FAILED
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -135,3 +135,76 @@ def test_report_header_distinguishes_planned_from_applied():
     assert messages.PURGE_HEADER_APPLIED not in planned
     assert messages.PURGE_HEADER_APPLIED in applied
     assert messages.PURGE_HEADER_PLANNED not in applied
+
+
+from purge_import import PurgeCounts, purge_one, verify_purge  # noqa: E402
+
+
+class RecordingGlpi(FakeGlpi):
+    def __init__(self, projects=(), container_rows=(), fail_on=None):
+        super().__init__(list(projects), list(container_rows))
+        self.deleted = []
+        self.fail_on = fail_on or set()
+
+    def delete_item(self, itemtype, item_id, force_purge=True):
+        if (itemtype, item_id) in self.fail_on:
+            from clients.errors import GlpiError
+
+            raise GlpiError("recusado")
+        assert force_purge is True, "phase 0 purges; the trash keeps the marker alive"
+        self.deleted.append((itemtype, item_id))
+
+    def notepad_rows(self, itemtype, items_id):
+        return [{"id": 55}]
+
+    def document_links(self, itemtype, items_id):
+        return [{"id": 66}]
+
+    def get_container_rows(self, itemtype, items_id):
+        return []
+
+
+def test_container_row_is_deleted_before_its_project():
+    glpi = RecordingGlpi()
+    target = PurgeTarget(100, "Casca", 0, [7], "17343")
+
+    purge_one(glpi, target)
+
+    itemtypes = [d[0] for d in glpi.deleted]
+    assert itemtypes.index(CONTAINER) < itemtypes.index("Project"), (
+        "deleting the project first leaves an orphan marker - the exact poison "
+        "this phase removes"
+    )
+
+
+def test_purge_one_counts_everything_it_removed():
+    glpi = RecordingGlpi()
+
+    counts = purge_one(glpi, PurgeTarget(100, "Casca", 0, [7, 8], "17343"))
+
+    assert counts.projects == 1
+    assert counts.containers == 2
+    assert counts.notes == 1
+    assert counts.links == 1
+    assert counts.failed == 0
+
+
+def test_a_failed_container_delete_does_not_delete_the_project():
+    glpi = RecordingGlpi(fail_on={(CONTAINER, 7)})
+
+    counts = purge_one(glpi, PurgeTarget(100, "Casca", 0, [7], "17343"))
+
+    assert counts.failed == 1
+    assert ("Project", 100) not in glpi.deleted, (
+        "the project must survive so the operator can retry; the reverse order "
+        "would strand the marker"
+    )
+
+
+def test_verify_counts_what_survived():
+    glpi = FakeGlpi(
+        projects=[project(1286, "2026-08-12 14:54:23")],
+        container_rows=[{"id": 9, "items_id": 1286, "rdmfield": "20438"}],
+    )
+
+    assert verify_purge(glpi) == (1, 1)
