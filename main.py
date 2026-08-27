@@ -112,7 +112,7 @@ def run_preflight(
     glpi: GlpiClient,
     redmine: RedmineClient,
     mapping: dict,
-    issue_id: int,
+    issue_id: int | None = None,
 ) -> bool:
     """Spec section 9.0. Returns False when the migration must not continue.
 
@@ -241,22 +241,28 @@ def run_preflight(
     else:
         print(messages.PREFLIGHT_DOCUMENT_TYPES_OK.format(count=len(extensions)))
 
-    # Redmine reachability, checked against the issue actually requested.
-    try:
-        root_issue = redmine.fetch_issue(issue_id, include=())
-    except ApiError as exc:
-        print(messages.PREFLIGHT_REDMINE_FAILED.format(detail=messages.redact(exc)))
-        return False
-    print(messages.PREFLIGHT_REDMINE_OK.format(issue_id=issue_id))
+    # Redmine reachability, checked against the issue actually requested, and
+    # the ROOT's scope (added 2026-08-19) which rides on that same GET rather
+    # than making one of its own. Both are guarded on `issue_id` because a
+    # batch caller has no single issue to check here - it runs preflight ONCE
+    # for the whole batch, before any root is chosen. That is safe: every id
+    # `pending_roots` yields already belongs to an in-scope root tracker by
+    # construction (`REDMINE_PROJECTS`), and reachability is proven moments
+    # later by the very first read `pending_roots` itself performs. A scope
+    # refusal must not hide a broken session or a missing right, which is why
+    # this stays the LAST preflight step for the single-issue path too.
+    if issue_id is not None:
+        try:
+            root_issue = redmine.fetch_issue(issue_id, include=())
+        except ApiError as exc:
+            print(messages.PREFLIGHT_REDMINE_FAILED.format(detail=messages.redact(exc)))
+            return False
+        print(messages.PREFLIGHT_REDMINE_OK.format(issue_id=issue_id))
 
-    # Scope of the ROOT (added 2026-08-19). It rides on the reachability GET
-    # above rather than making one of its own, and it is deliberately the LAST
-    # preflight step: a scope refusal must not hide a broken session or a
-    # missing right, which the user has to fix first anyway.
-    rejection = root_tracker_rejection(root_issue)
-    if rejection:
-        print(rejection)
-        return False
+        rejection = root_tracker_rejection(root_issue)
+        if rejection:
+            print(rejection)
+            return False
 
     print(messages.PREFLIGHT_PASSED)
     return True

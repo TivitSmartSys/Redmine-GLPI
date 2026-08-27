@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest  # noqa: E402
 
+import migrate_batch  # noqa: E402
 from batch import runner  # noqa: E402
 from store.batch import STATE_FAILED, STATE_OK, STATE_SKIPPED, BatchLedger  # noqa: E402
 
@@ -104,3 +105,26 @@ def test_every_item_gets_its_own_report_file(monkeypatch, ledger, tmp_path):
 
     assert (tmp_path / "RDM1.txt").exists()
     assert (tmp_path / "RDM2.txt").exists()
+
+
+def test_dry_run_is_the_default():
+    args = migrate_batch.build_parser().parse_args(["--project", "hydro"])
+
+    assert args.apply is False
+    assert args.resume is False
+
+
+def test_project_choice_is_restricted_to_the_three_that_have_roots():
+    parser = migrate_batch.build_parser()
+
+    with pytest.raises(SystemExit):
+        parser.parse_args(["--project", "configuracao-rede-corp-voip"])
+
+
+def test_limit_and_skips_are_passed_through():
+    args = migrate_batch.build_parser().parse_args(
+        ["--project", "hydro", "--limit", "50", "--skip-attachments"]
+    )
+
+    assert args.limit == 50
+    assert args.skip_attachments is True

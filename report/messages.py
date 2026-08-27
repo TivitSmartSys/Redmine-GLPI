@@ -903,3 +903,20 @@ BATCH_SUMMARY_FAILURE_LINE = "  RDM {issue_id}: {detail}"
 BATCH_SUMMARY_NO_FAILURES = "Nenhuma falha."
 BATCH_SUMMARY_PURGE_HEADER = "REGISTRO DA LIMPEZA (FASE 0)"
 BATCH_SUMMARY_SAVED = "Resumo salvo em {path}"
+
+# -- migrate_batch.py CLI (phase 1) ----------------------------------------
+
+CLI_HELP_BATCH = (
+    "Migra em lote todos os projetos pendentes de um projeto do Redmine. "
+    "Sem --apply apenas planeja."
+)
+CLI_HELP_BATCH_PROJECT = "Identificador do projeto no Redmine."
+CLI_HELP_BATCH_LIMIT = "Migra no máximo N raízes nesta execução."
+CLI_HELP_BATCH_RESUME = "Retoma a execução informada, refazendo pendentes e falhas."
+CLI_HELP_BATCH_REPORTS = "Diretório dos relatórios (padrão: reports)."
+CLI_HELP_BATCH_PURGE_RECORD = "Registro da fase 0, incorporado ao resumo final."
+BATCH_QUEUE = "Fila: {count} raízes. Execução {run_id}."
+BATCH_NOTHING_TO_DO = "Nada pendente: todas as raízes já estão no GLPI."
+BATCH_CONFIRM_PROMPT = (
+    "Isto vai criar até {count} projetos no GLPI. Digite 'sim' para continuar: "
+)
