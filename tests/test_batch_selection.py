@@ -134,3 +134,21 @@ def test_the_three_redmine_projects_map_to_their_root_trackers():
         "hydro": 42,
         "operacao-cemig": 39,
     }
+
+
+def test_limit_zero_selects_nothing_rather_than_everything():
+    """`--limit 0` must mean none, not all. Truthiness would invert this."""
+    glpi = MarkerGlpi([])
+    redmine = FakeRedmine([issue(1), issue(2), issue(3)])
+
+    assert pending_roots(glpi, redmine, 14, limit=0) == []
+
+
+def test_limit_slices_after_the_subtraction_not_before():
+    """Slicing first would drop pending roots to make room for migrated ones."""
+    glpi = MarkerGlpi([{"items_id": 100, "rdmfield": "1"},
+                       {"items_id": 101, "rdmfield": "2"}])
+    redmine = FakeRedmine([issue(1), issue(2), issue(3), issue(4)])
+
+    # 1 and 2 are already migrated; the first two PENDING roots are 3 and 4.
+    assert pending_roots(glpi, redmine, 14, limit=2) == [3, 4]

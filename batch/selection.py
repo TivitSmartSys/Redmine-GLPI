@@ -47,4 +47,4 @@ def candidate_roots(redmine, tracker_id: int) -> list[int]:
 def pending_roots(glpi, redmine, tracker_id: int, limit: int | None = None) -> list[int]:
     already = migrated_markers(glpi)
     pending = [rid for rid in candidate_roots(redmine, tracker_id) if rid not in already]
-    return pending[:limit] if limit else pending
+    return pending if limit is None else pending[:limit]  # Test None explicitly; limit=0 must mean none, not all.
