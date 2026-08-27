@@ -892,3 +892,14 @@ UI_UNEXPECTED_ERROR = "Erro inesperado: {detail}"
 BATCH_ITEM_START = "[{position}/{total}] RDM {issue_id}"
 BATCH_ITEM_ALREADY = "já migrado no GLPI (projeto {glpi_id})"
 BATCH_ITEM_FAILED = "  FALHA em RDM {issue_id}: {detail}"
+
+# -- batch/report.py (phase 1 summary) ----------------------------------------
+
+BATCH_SUMMARY_HEADER = "RESUMO DA MIGRAÇÃO EM LOTE — {label} (execução {run_id})"
+BATCH_SUMMARY_TOTAL = "Itens na fila: {total}"
+BATCH_SUMMARY_STATE = "  {state:<8}: {count}"
+BATCH_SUMMARY_FAILURES = "FALHAS ({count}) — cada uma com o motivo:"
+BATCH_SUMMARY_FAILURE_LINE = "  RDM {issue_id}: {detail}"
+BATCH_SUMMARY_NO_FAILURES = "Nenhuma falha."
+BATCH_SUMMARY_PURGE_HEADER = "REGISTRO DA LIMPEZA (FASE 0)"
+BATCH_SUMMARY_SAVED = "Resumo salvo em {path}"
