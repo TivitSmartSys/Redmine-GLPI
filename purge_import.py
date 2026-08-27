@@ -18,6 +18,12 @@ Dry-run by default, like every other writer in this repo.
 
 from __future__ import annotations
 
+import argparse
+from dataclasses import dataclass, field
+
+from config.settings import ITEMTYPE_ADDITIONAL_FIELDS
+from report import messages
+
 # Projects created on this date belong to the poisoned bulk import.
 IMPORT_DATE = "2026-06-06"
 
@@ -64,3 +70,91 @@ def select_targets(projects: list[dict]) -> list[int]:
             + ", ".join(str(p) for p in protected)
         )
     return targets
+
+
+@dataclass
+class PurgeTarget:
+    project_id: int
+    name: str
+    entities_id: int
+    container_row_ids: list[int] = field(default_factory=list)
+    marker: str = ""
+
+
+def build_purge_plan(glpi) -> list[PurgeTarget]:
+    """Read-only. Pairs every target project with its container-15 rows.
+
+    The entity session is widened first for the same reason preflight does it:
+    a session active in entity 75 sees three entities, so most of the import
+    would simply be invisible and survive the "purge" unmentioned.
+    """
+    glpi.set_active_entity_root()
+    projects = glpi.iter_all_rows("Project")
+    target_ids = select_targets(projects)
+    wanted = set(target_ids)
+
+    rows_by_project: dict[int, list[dict]] = {}
+    for row in glpi.iter_all_rows(ITEMTYPE_ADDITIONAL_FIELDS):
+        host = int(row.get("items_id") or 0)
+        if host in wanted:
+            rows_by_project.setdefault(host, []).append(row)
+
+    by_id = {int(p.get("id") or 0): p for p in projects}
+    plan: list[PurgeTarget] = []
+    for pid in target_ids:
+        source = by_id.get(pid, {})
+        rows = rows_by_project.get(pid, [])
+        marker = next(
+            (str(r.get("rdmfield") or "").strip() for r in rows
+             if str(r.get("rdmfield") or "").strip()),
+            "",
+        )
+        plan.append(
+            PurgeTarget(
+                project_id=pid,
+                name=str(source.get("name") or ""),
+                entities_id=int(source.get("entities_id") or 0),
+                container_row_ids=[int(r["id"]) for r in rows],
+                marker=marker,
+            )
+        )
+    return plan
+
+
+def render_purge_report(targets: list[PurgeTarget], applied: bool) -> str:
+    """PT-BR plan report. `applied` decides which of the two headers is used -
+    the saved file is evidence and must say whether it is a preview or a
+    record of what already happened."""
+    header = messages.PURGE_HEADER_APPLIED if applied else messages.PURGE_HEADER_PLANNED
+    lines = [header, "=" * len(header), ""]
+    lines.append(messages.PURGE_TARGET_COUNT.format(count=len(targets)))
+    lines.append(messages.PURGE_KEPT_COUNT.format(count=len(KEEP_PROJECT_IDS)))
+    lines.append("")
+    for target in targets:
+        lines.append(
+            messages.PURGE_TARGET_LINE.format(
+                project_id=target.project_id,
+                entity=target.entities_id,
+                marker=target.marker or "-",
+                name=target.name[:60],
+            )
+        )
+    return "\n".join(lines)
+
+
+def confirm_purge(count: int) -> bool:
+    """Same gate as main.py's confirm_apply and reset_migration.py's
+    confirm_reset: an explicit word, after the full report."""
+    try:
+        answer = input(messages.PURGE_CONFIRM_PROMPT.format(count=count))
+    except EOFError:
+        return False
+    return answer.strip().casefold() in messages.APPLY_CONFIRM_ACCEPT
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="purge_import.py", description=messages.CLI_HELP_PURGE)
+    parser.add_argument("--apply", action="store_true", help=messages.CLI_HELP_PURGE_APPLY)
+    parser.add_argument("--yes", action="store_true", help=messages.CLI_HELP_PURGE_YES)
+    parser.add_argument("--report", default=None, help=messages.CLI_HELP_PURGE_REPORT)
+    return parser

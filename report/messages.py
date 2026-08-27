@@ -762,6 +762,55 @@ UI_CONFIRM_EXPIRED = (
 )
 
 UI_JOB_BUSY = "Já existe uma execução em andamento. Aguarde a conclusão."
+
+# -- purge_import.py (fase 0 da migração em lote) --------------------------
+
+CLI_HELP_PURGE = (
+    "Remove o import em lote de 2026-06-06 e os projetos de teste do GLPI. "
+    "Sem --apply apenas mostra o que seria removido."
+)
+CLI_HELP_PURGE_APPLY = "Executa a remoção. Exige confirmação."
+CLI_HELP_PURGE_YES = "Confirma sem perguntar (para pipelines)."
+CLI_HELP_PURGE_REPORT = "Caminho do arquivo de registro da limpeza."
+
+# Two headers, not one: the saved report is evidence of a destructive
+# operation, so it must say on its face whether it describes an intention
+# (dry-run) or an action that already happened (--apply). render_purge_report
+# selects between them on its `applied` flag - see CLAUDE.md's controller
+# ruling for 2026-08-27's Task 4.
+PURGE_HEADER_PLANNED = "LIMPEZA DO IMPORT DE 2026-06-06 — PLANEJADA (nada foi removido)"
+PURGE_HEADER_APPLIED = "LIMPEZA DO IMPORT DE 2026-06-06 — EXECUTADA"
+PURGE_TARGET_COUNT = "Projetos selecionados para remoção: {count}"
+PURGE_KEPT_COUNT = "Projetos preservados: {count}"
+PURGE_TARGET_LINE = "  {project_id:>6} | ent {entity:>3} | marcador {marker:<12} | {name}"
+PURGE_KEEP_VIOLATION = (
+    "ABORTADO: {detail}. Nenhum projeto foi removido. "
+    "Corrija a regra de seleção antes de tentar de novo."
+)
+PURGE_CONFIRM_PROMPT = (
+    "Isto remove {count} projetos do GLPI de forma DEFINITIVA (force_purge). "
+    "Digite 'sim' para continuar: "
+)
+PURGE_CANCELLED = "Limpeza cancelada. Nada foi removido."
+PURGE_NOTHING_TO_DO = "Nada a remover: o alvo está vazio."
+PURGE_ROW_DELETED = "  removido {itemtype} {row_id} (projeto {project_id})"
+PURGE_PROJECT_DELETED = "  removido Project {project_id}"
+PURGE_ITEM_FAILED = (
+    "  FALHA em {itemtype} {row_id} do projeto {project_id}: {detail}"
+)
+PURGE_SUMMARY = (
+    "Removidos {projects} projetos, {containers} linhas de container, "
+    "{tasks} tarefas, {notes} notas, {links} vínculos de documento. Falhas: {failed}."
+)
+PURGE_VERIFY_OK = (
+    "Verificação: restam {projects} projetos e {containers} linhas de container 15, "
+    "todas pertencentes aos projetos preservados."
+)
+PURGE_VERIFY_FAILED = (
+    "Verificação FALHOU: restam {projects} projetos e {containers} linhas de "
+    "container 15. Esperado {expected_projects} e somente linhas preservadas."
+)
+PURGE_REPORT_SAVED = "Registro da limpeza salvo em {path}"
 UI_JOB_NOT_FOUND = "Execução não encontrada ou já expirada."
 UI_ISSUE_INVALID = "Informe um número de issue válido."
 UI_TRACKER_INVALID = "Informe um número de tracker válido."
