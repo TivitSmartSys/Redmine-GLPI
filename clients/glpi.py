@@ -432,6 +432,39 @@ class GlpiClient:
             return [row for row in payload if isinstance(row, dict)]
         return []
 
+    def iter_all_rows(self, itemtype: str, page_size: int = 200) -> list[dict]:
+        """Every row of an itemtype, following the pages to the end.
+
+        TRAP: `_search(full_range=True)` pins `range` to SEARCH_FETCH_RANGE
+        ("0-999"), which is a ceiling, not a page loop. GLPI held 930
+        container-15 rows on 2026-08-27 - close enough that one more import
+        would have truncated the read in silence. A truncated read here does not
+        raise; it makes the batch believe the rows past the cap were never
+        migrated, and migrate them a second time.
+        """
+        rows: list[dict] = []
+        start = 0
+        while True:
+            try:
+                page = self._request(
+                    "GET",
+                    f"/{itemtype}",
+                    params={"range": f"{start}-{start + page_size - 1}"},
+                )
+            except GlpiError as exc:
+                # Same convention as _search: GLPI answers 400/404 for an empty
+                # result set in some versions.
+                if "ERROR_GLPI_SEARCH" in str(exc) or "404" in str(exc):
+                    break
+                raise
+            if not isinstance(page, list) or not page:
+                break
+            rows.extend(page)
+            if len(page) < page_size:
+                break
+            start += page_size
+        return rows
+
     def get_item(self, itemtype: str, item_id: int) -> dict | None:
         """One item, or None when it no longer exists.
 
