@@ -31,6 +31,20 @@ python audit_coverage.py --tracker 42
 python reset_migration.py --issue 16467              # diagnose only — deletes nothing
 python reset_migration.py --issue 16467 --apply      # forget the migration, after "sim"
 python reset_migration.py --issue 16467 --local-only # clear the SQLite map, leave GLPI alone
+
+python purge_import.py                    # phase 0 dry-run — lists the 2026-06-06 import, writes nothing
+python purge_import.py --apply            # purges it, after an interactive "sim" confirmation
+python purge_import.py --apply --yes      # non-interactive confirmation (pipelines)
+python purge_import.py --report purge.txt # dry-run + save the plan report
+
+python migrate_batch.py --project operacao-cemig             # phase 1 dry-run, one Redmine project at a time
+python migrate_batch.py --project hydro --apply --limit 20    # writes, first 20 pending roots only
+python migrate_batch.py --project projetos-telecom --apply --yes  # non-interactive confirmation
+python migrate_batch.py --project hydro --resume <run-id>     # retomada: retries pending + failed
+python migrate_batch.py --project hydro --db path\to\other.db # override the SQLite ledger
+python migrate_batch.py --project hydro --reports out\dir     # override the reports directory (default: reports)
+python migrate_batch.py --project hydro --purge-record purge.txt --apply  # fold the phase 0 record into resumo.txt
+python migrate_batch.py --project hydro --apply --skip-attachments --skip-notes  # same flags main.py takes, per item
 ```
 
 `reset_migration.py` exists because deleting the project in GLPI does **not**
@@ -45,7 +59,7 @@ while the host project is alive; a project in the trash counts as orphaned.
 
 Exit codes: `0` ok, `1` failed/aborted, `2` configuration error.
 
-There is a pytest suite (`python -m pytest tests -q`, 137 tests) covering the
+There is a pytest suite (`python -m pytest tests -q`, 181 tests) covering the
 confirm gate, the summary figures, the VARCHAR(255) truncation, the client→entity
 map, the CEMIG scope rules and the root-tracker guard, the creation-date shift,
 and the attachment and
@@ -413,6 +427,86 @@ Watch the field name on `ProjectPlan`: `notes` is the apply-time message log
 (`list[str]`, appended to the end of the report) and predates this phase. The
 planned notes live on **`notes_planned`**.
 
+### Batch migration — `purge_import.py` then `migrate_batch.py`
+
+Opened 2026-08-27. Until this point the pipeline moved one issue at a time
+(`python main.py --issue N`); 5627 in-scope roots remained. Design is in
+`docs/superpowers/specs/2026-08-27-batch-migration-design.md`.
+
+**The measured finding that motivates both phases.** GLPI holds 1274 projects,
+of which **1253 were created on 2026-06-06** by a bulk import that is not this
+tool. Comparing each project's `rdmfield` marker against the "RDM &lt;n&gt;"
+number in its own name: **698 contradict it, 5 match, 139 carry no RDM number
+at all**. Marker `16950` sits on **13** unrelated live projects, `17018` on
+**5** — every one of those projects has an unrelated name. Only 909 of the
+1253 even carry a container-15 row, so **344 are invisible to dedup entirely**
+(no marker to find). A 40-project sample of the June import holds **0 notes
+and 0 linked documents** — they are empty shells, not partial migrations.
+
+**This breaks a batch in both directions at once.** ~660 issues would be
+skipped, each because its own real marker happens to sit on a project that
+belongs to a different issue. And the 1253 June shells would be migrated a
+second time, because their true Redmine issue cannot be found by a marker
+that points somewhere else. Repairing the markers from the project names was
+considered and rejected: it would recover some, but the shells still have no
+tasks, no notes and no documents, so a repaired marker would read as a
+complete migration and hide the gap instead of closing it.
+
+**Phase 0, `purge_import.py`**, removes the poisoned import so `rdmfield`
+becomes trustworthy again. The target is selected **positively**, never as
+"everything else": every project with `date_creation` on 2026-06-06, plus 12
+explicit test ids. **1265 of 1274 projects are removed.** A hard-coded keep
+list of 9 projects is checked first, and the tool refuses to start at all if
+target selection would touch any of them — each of the 9 was verified
+individually to carry a marker pointing at a real in-scope root whose subject
+matches the project name. Deletion uses `force_purge`, not the trash: a
+trashed project would still answer `rdmfield` searches and keep poisoning
+dedup.
+
+**The deletion order is inverted on purpose: the container-15 row goes first,
+the project last.** The obvious order — project, then its container row — is
+wrong, because a plugin container row outlives its host project (the same
+fact `reset_migration.py` exists to work around). A failure partway through
+after the project is already gone would strand exactly the marker this phase
+is trying to remove. Deleting the container row first means a failure leaves
+a live project with no marker, which is recoverable. The final step re-reads
+the project count and the container-15 row count; the cleanup is not
+considered done until that read confirms nothing but the 9 kept projects
+remain — that read is what proves dedup is no longer poisoned, not the delete
+calls themselves.
+
+**Phase 1, `migrate_batch.py`**, runs the actual migration in supervised,
+resumable batches, one Redmine project at a time. Each item **is** the
+existing `main.py` pipeline — `build_project_plan` then `apply_plan` inside a
+`try`/`except` — so no migration logic is duplicated; everything already in
+this file about entities, containers, notes, files, dates and truncation
+keeps applying unchanged. The pending list comes from **one bulk read** of
+every container-15 row rather than 5627 individual dedup searches — at that
+scale the difference is minutes versus the better part of an hour before any
+work even starts. Preflight, the entity-root widening and the dropdown cache
+load all happen **once per batch run, not once per item**. A failing item
+records its reason in the ledger and the run continues; stopping the whole
+batch is reserved for a dead GLPI session or a failed preflight, where every
+later item would fail identically anyway.
+
+State lives in a new SQLite table, `batch_item`, deliberately **separate
+from `migration_map`**: `migration_map` answers "what GLPI item does this
+Redmine id map to", while `batch_item` answers "have we already tried this
+root in this run, and what happened" — folding retry bookkeeping into the
+mapping table would make a failed attempt look like a real mapping.
+`--resume <run-id>` retries whatever the ledger still shows as pending or
+failed. Each item writes its own report via the existing `Reporter`
+(`reports/<run>/RDM<id>.txt`), and one `resumo.txt` sits above them with the
+outcome counts and every failure's reason written out in full — it also
+folds in the Phase 0 purge record when `--purge-record` is given, so the
+final report accounts for what was deleted as well as what was written.
+
+**The scale.** Redmine has exactly 4 projects. Three hold in-scope roots —
+Área de Telecom **5451** (tracker 14), HYDRO **170** (tracker 42), Operação
+CEMIG **6** (tracker 39) — for **5627** roots total. The fourth, "Configuração
+REDE CORP VOIP", holds **zero issues of any tracker**; there is nothing there
+to migrate, and it has no entry in `batch.selection.REDMINE_PROJECTS`.
+
 ## Hard rules (spec 13 — do not relax these)
 
 1. **Match custom fields by name, never by id.** Ids differ per tracker: the
@@ -438,6 +532,12 @@ planned notes live on **`notes_planned`**.
 6. **Don't guess.** Anything not in the spec gets a `TODO` with a comment, or a
    question to the user — plus a dated verification comment when confirmed
    against the live API.
+7. **The Redmine API is read-only.** No phase, in any of the three CLIs, ever
+   writes to it — migration state lives in GLPI (`rdmfield`) and in the local
+   SQLite ledger (`migration_map`, `batch_item`), never in the source. Closed
+   decision 2026-08-27, and pinned by `tests/test_readonly_redmine.py`: it
+   fails the moment `RedmineClient` grows a `.post(`/`.put(`/`.delete(`/
+   `.patch(` call or a method named after one of those verbs.
 
 ## Language convention
 
@@ -706,6 +806,14 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
   permissão" text as a real rights problem, and so does a container row whose
   host item was deleted. Confirm the parent still exists before blaming rights —
   on 2026-08-07 a deleted project sent this diagnosis down a false trail.
+- **`_search(full_range=True)` pins `range` to `"0-999"` — a ceiling, not a page
+  loop.** GLPI already held 930 container-15 rows on 2026-08-27, close enough
+  that one more import would have truncated the read in silence, and a
+  truncated read here does not raise: it just makes the batch believe the rows
+  past the cap were never migrated and migrate them a second time.
+  `GlpiClient.iter_all_rows()` pages properly instead, and advances its cursor
+  by rows **received**, not rows requested, so a server that ignores `range`
+  cannot spin it forever.
 
 ## Open points before production (spec 11)
 
