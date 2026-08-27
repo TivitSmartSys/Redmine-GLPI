@@ -15,11 +15,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import pytest  # noqa: E402
 
+import purge_import  # noqa: E402
 from config.settings import ITEMTYPE_ADDITIONAL_FIELDS as CONTAINER  # noqa: E402
+from config.settings import ITEMTYPE_FATURAMENTO  # noqa: E402
 from report import messages  # noqa: E402
 from purge_import import (  # noqa: E402
     IMPORT_DATE,
     KEEP_PROJECT_IDS,
+    MAX_IMPORT_PROJECT_ID,
     KeepListViolation,
     PurgeTarget,
     build_parser,
@@ -68,6 +71,41 @@ def test_a_project_with_no_creation_date_is_left_alone():
     assert select_targets([{"id": 500, "date_creation": None, "name": "?"}]) == []
 
 
+# -- I6: date_creation is back-dated since 2026-08-27; an id ceiling protects
+# real migrations that happen to have been created on 2026-06-06 in Redmine ---
+
+
+def test_a_backdated_real_migration_above_the_ceiling_is_not_selected():
+    """A Redmine root created 2026-06-06 now back-dates its GLPI project's
+    date_creation to match - exactly IMPORT_DATE - so the date rule alone
+    would purge a real migration. The id ceiling is what keeps it safe."""
+    projects = [project(1500, "2026-06-06 09:00:00")]
+
+    assert select_targets(projects) == []
+
+
+def test_a_casca_at_the_ceiling_id_is_still_selected(monkeypatch):
+    # 1298 itself is a real kept project (KEEP_PROJECT_IDS), so the boundary
+    # is exercised against a fresh ceiling instead of colliding with it.
+    monkeypatch.setattr(purge_import, "MAX_IMPORT_PROJECT_ID", 2000)
+    projects = [project(2000, "2026-06-06 09:00:00")]
+
+    assert select_targets(projects) == [2000]
+
+
+def test_a_casca_just_below_the_ceiling_is_still_selected():
+    projects = [project(MAX_IMPORT_PROJECT_ID - 1, "2026-06-06 09:00:00")]
+
+    assert select_targets(projects) == [MAX_IMPORT_PROJECT_ID - 1]
+
+
+def test_explicit_test_ids_are_unaffected_by_the_ceiling():
+    """TEST_PROJECT_IDS stays an exact-match rule regardless of id."""
+    projects = [project(1291, "2026-08-19 10:58:33")]  # far above the ceiling
+
+    assert select_targets(projects) == [1291]
+
+
 class FakeGlpi:
     """Answers iter_all_rows for Project and the container-15 itemtype."""
 
@@ -97,6 +135,45 @@ def test_plan_pairs_each_target_with_its_container_rows():
     assert [t.project_id for t in plan] == [100]
     assert plan[0].container_row_ids == [7, 8]
     assert plan[0].marker == "17343"
+
+
+def test_plan_selects_orphan_container_rows_whose_host_project_is_gone():
+    """A container-15 row whose host project no longer exists is PRECISELY
+    the poison this tool exists to remove: it keeps answering find_by_rdmfield
+    for a project that is gone. It was previously never selected because
+    build_purge_plan only looked at rows whose items_id was in the target set."""
+    glpi = FakeGlpi(
+        projects=[project(100)],
+        container_rows=[
+            {"id": 7, "items_id": 100, "rdmfield": "17343"},
+            {"id": 50, "items_id": 9999, "rdmfield": "orphan-marker"},
+        ],
+    )
+
+    plan = build_purge_plan(glpi)
+
+    orphans = [t for t in plan if t.is_orphan]
+    assert len(orphans) == 1
+    assert orphans[0].container_row_ids == [50]
+    assert orphans[0].project_id == 9999
+    assert orphans[0].marker == "orphan-marker"
+
+
+def test_plan_does_not_touch_a_container_row_of_a_live_kept_project():
+    """A row whose host project is alive but NOT a purge target (a kept,
+    still-in-use project) must be selected as neither a target nor an orphan."""
+    glpi = FakeGlpi(
+        projects=[project(100), project(555, "2026-08-12 14:00:00")],
+        container_rows=[
+            {"id": 7, "items_id": 100, "rdmfield": "17343"},
+            {"id": 20, "items_id": 555, "rdmfield": "keep-me"},
+        ],
+    )
+
+    plan = build_purge_plan(glpi)
+
+    all_row_ids = {rid for t in plan for rid in t.container_row_ids}
+    assert 20 not in all_row_ids
 
 
 def test_plan_widens_the_entity_session_before_reading():
@@ -141,10 +218,13 @@ from purge_import import PurgeCounts, purge_one, verify_purge  # noqa: E402
 
 
 class RecordingGlpi(FakeGlpi):
-    def __init__(self, projects=(), container_rows=(), fail_on=None):
+    def __init__(self, projects=(), container_rows=(), fail_on=None,
+                 tasks=(), container26=None):
         super().__init__(list(projects), list(container_rows))
         self.deleted = []
         self.fail_on = fail_on or set()
+        self.tasks = list(tasks)
+        self.container26 = dict(container26 or {})
 
     def delete_item(self, itemtype, item_id, force_purge=True):
         if (itemtype, item_id) in self.fail_on:
@@ -161,7 +241,10 @@ class RecordingGlpi(FakeGlpi):
         return [{"id": 66}]
 
     def get_container_rows(self, itemtype, items_id):
-        return []
+        return list(self.container26.get(items_id, []))
+
+    def project_tasks(self, project_id):
+        return list(self.tasks)
 
 
 def test_container_row_is_deleted_before_its_project():
@@ -207,4 +290,147 @@ def test_verify_counts_what_survived():
         container_rows=[{"id": 9, "items_id": 1286, "rdmfield": "20438"}],
     )
 
-    assert verify_purge(glpi) == (1, 1)
+    assert verify_purge(glpi) == (1, 1, 0)
+
+
+# -- I5(b): verify_purge must surface stray (orphan) rows, not just projects -
+
+
+def test_verify_reports_stray_rows_whose_host_project_no_longer_exists():
+    """A surviving project count alone says nothing about the markers: an
+    orphan container row answers find_by_rdmfield exactly as a live one does,
+    so a run that left orphans behind has not actually fixed dedup."""
+    glpi = FakeGlpi(
+        projects=[project(1286, "2026-08-12 14:54:23")],
+        container_rows=[
+            {"id": 9, "items_id": 1286, "rdmfield": "20438"},
+            {"id": 99, "items_id": 42, "rdmfield": "leftover-orphan"},
+        ],
+    )
+
+    assert verify_purge(glpi) == (1, 2, 1)
+
+
+# -- I4: ProjectTasks and their container-26 rows must be purged too ---------
+
+
+def test_purge_one_removes_projecttasks_and_their_container26_rows():
+    glpi = RecordingGlpi(
+        tasks=[{"id": 14109}],
+        container26={14109: [{"id": 5001}]},
+    )
+
+    counts = purge_one(glpi, PurgeTarget(100, "Casca", 0, [7], "17343"))
+
+    assert counts.tasks == 1
+    assert (ITEMTYPE_FATURAMENTO, 5001) in glpi.deleted
+    assert ("ProjectTask", 14109) in glpi.deleted
+    # Order: the container-26 row before its task, both before the project -
+    # the same inversion as the container-15/project rule, one level down.
+    assert glpi.deleted.index((ITEMTYPE_FATURAMENTO, 5001)) < glpi.deleted.index(
+        ("ProjectTask", 14109)
+    )
+    assert glpi.deleted.index(("ProjectTask", 14109)) < glpi.deleted.index(
+        ("Project", 100)
+    )
+
+
+def test_purge_one_is_best_effort_when_no_tasks_are_found():
+    """A flat GET /ProjectTask was measured returning 0 rows for this whole
+    instance; an empty read must not be treated as a failure."""
+    glpi = RecordingGlpi(tasks=[])
+
+    counts = purge_one(glpi, PurgeTarget(100, "Casca", 0, [7], "17343"))
+
+    assert counts.failed == 0
+    assert counts.tasks == 0
+    assert counts.projects == 1
+
+
+def test_purge_one_swallows_a_projecttask_read_failure():
+    """BEST EFFORT means a real API failure reading tasks must not abort the
+    whole purge of this project - it is a nice-to-have, not the load-bearing
+    part of the phase."""
+    from clients.errors import ApiError
+
+    class RaisingGlpi(RecordingGlpi):
+        def project_tasks(self, project_id):
+            raise ApiError("indisponível")
+
+    glpi = RaisingGlpi()
+
+    counts = purge_one(glpi, PurgeTarget(100, "Casca", 0, [7], "17343"))
+
+    assert counts.failed == 0
+    assert counts.projects == 1
+
+
+def test_a_stranded_container26_row_keeps_its_task_alive():
+    """Same inversion as container 15: if a container-26 row refuses to
+    delete, the task it belongs to must survive so the row is not orphaned."""
+    glpi = RecordingGlpi(
+        tasks=[{"id": 14109}],
+        container26={14109: [{"id": 5001}]},
+        fail_on={(ITEMTYPE_FATURAMENTO, 5001)},
+    )
+
+    counts = purge_one(glpi, PurgeTarget(100, "Casca", 0, [7], "17343"))
+
+    assert ("ProjectTask", 14109) not in glpi.deleted
+    assert counts.tasks == 0
+    assert counts.failed == 1
+    # The project purge itself still proceeds - only the stranded task's
+    # branch is skipped.
+    assert ("Project", 100) in glpi.deleted
+
+
+def test_orphan_target_purges_only_its_rows_no_project_to_delete():
+    glpi = RecordingGlpi()
+    target = PurgeTarget(
+        project_id=9999, name="", entities_id=0, container_row_ids=[50],
+        marker="orphan-marker", is_orphan=True,
+    )
+
+    counts = purge_one(glpi, target)
+
+    assert glpi.deleted == [(CONTAINER, 50)]
+    assert counts.containers == 1
+    assert counts.projects == 0
+    assert counts.tasks == 0
+
+
+# -- M10: an exception surfaced from a keep-list violation must be redacted --
+
+
+def test_keep_violation_detail_is_redacted(monkeypatch, capsys):
+    secret = "shh-secret-token-m10"
+    messages.register_secrets((secret,))
+
+    class FakeSettings:
+        glpi_url = "http://glpi"
+        glpi_user_token = secret
+        glpi_app_token = "app"
+
+        def secret_values(self):
+            return (self.glpi_user_token,)
+
+    class FakeGlpiCtx:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    def boom_plan(_glpi):
+        raise KeepListViolation(f"token exposed: {secret}")
+
+    monkeypatch.setattr(purge_import, "load_settings", lambda: FakeSettings())
+    monkeypatch.setattr(purge_import, "GlpiClient", lambda *a, **k: FakeGlpiCtx())
+    monkeypatch.setattr(purge_import, "build_purge_plan", boom_plan)
+
+    code = purge_import.main([])
+
+    assert code == purge_import.EXIT_FAILED
+    err = capsys.readouterr().err
+    assert secret not in err
+    assert messages.REDACTED in err

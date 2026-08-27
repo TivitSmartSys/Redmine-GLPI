@@ -35,16 +35,36 @@ def migrated_markers(glpi) -> set[int]:
     return found
 
 
-def candidate_roots(redmine, tracker_id: int) -> list[int]:
-    """Parentless issues of one tracker, in Redmine's own order."""
+def candidate_roots(
+    redmine, tracker_id: int, project_id: str | int | None = None
+) -> list[int]:
+    """Parentless issues of one tracker, in Redmine's own order.
+
+    `project_id` is the Redmine project identifier (the key of REDMINE_PROJECTS)
+    and is passed straight to the query. It used to be omitted, which was
+    correct only by accident: each root tracker was measured to live in exactly
+    one project, so the tracker filter alone happened to give the same answer.
+    The --project flag promises project scoping, so it now does it - the
+    accident is not something a 5627-item run should lean on.
+    """
     return [
         int(issue["id"])
-        for issue in redmine.iter_issues(tracker_id)
+        for issue in redmine.iter_issues(tracker_id, project_id=project_id)
         if not issue.get("parent")
     ]
 
 
-def pending_roots(glpi, redmine, tracker_id: int, limit: int | None = None) -> list[int]:
+def pending_roots(
+    glpi,
+    redmine,
+    tracker_id: int,
+    limit: int | None = None,
+    project_id: str | int | None = None,
+) -> list[int]:
     already = migrated_markers(glpi)
-    pending = [rid for rid in candidate_roots(redmine, tracker_id) if rid not in already]
+    pending = [
+        rid
+        for rid in candidate_roots(redmine, tracker_id, project_id=project_id)
+        if rid not in already
+    ]
     return pending if limit is None else pending[:limit]  # Test None explicitly; limit=0 must mean none, not all.

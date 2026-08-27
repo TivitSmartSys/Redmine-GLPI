@@ -15,7 +15,13 @@ import pytest  # noqa: E402
 
 import migrate_batch  # noqa: E402
 from batch import runner  # noqa: E402
-from store.batch import STATE_FAILED, STATE_OK, STATE_SKIPPED, BatchLedger  # noqa: E402
+from store.batch import (  # noqa: E402
+    STATE_FAILED,
+    STATE_OK,
+    STATE_PENDING,
+    STATE_SKIPPED,
+    BatchLedger,
+)
 
 
 class Boom(Exception):
@@ -105,6 +111,120 @@ def test_every_item_gets_its_own_report_file(monkeypatch, ledger, tmp_path):
 
     assert (tmp_path / "RDM1.txt").exists()
     assert (tmp_path / "RDM2.txt").exists()
+
+
+# -- I3: a dead GLPI session must not manufacture thousands of fake failures --
+
+
+def test_consecutive_failures_trip_the_abort_and_leave_the_rest_pending(
+    monkeypatch, ledger, tmp_path
+):
+    """The scenario CLAUDE.md/the finding describes: the session dies partway
+    through and every remaining item would otherwise fail fast, landing in the
+    ledger as genuine migration failures indistinguishable from real ones."""
+    total = runner.MAX_CONSECUTIVE_FAILURES + 5
+    ids = list(range(1, total + 1))
+    patch_pipeline(monkeypatch, fails=set(ids))
+    run = ledger.start_run("t")
+    ledger.queue(run, ids)
+
+    runner.run_batch(
+        None, None, {}, ledger, run, ids,
+        apply_mode=True, report_dir=tmp_path,
+    )
+
+    counts = ledger.counts(run)
+    assert counts[STATE_FAILED] == runner.MAX_CONSECUTIVE_FAILURES
+    # Everything past the trip point keeps its `pending` state - it is never
+    # marked - so --resume retries it untouched once the session is back.
+    assert counts.get(STATE_PENDING, 0) == total - runner.MAX_CONSECUTIVE_FAILURES
+
+
+def test_a_success_between_failures_resets_the_counter(monkeypatch, ledger, tmp_path):
+    """Sparse, unrelated per-item failures (an oversized file, a 403, a missing
+    entity) must never trip the abort - only a true unbroken run of them."""
+    n = runner.MAX_CONSECUTIVE_FAILURES - 1
+    bad_1 = list(range(1, n + 1))
+    bad_2 = list(range(1000, 1000 + n))
+    ids = bad_1 + [999] + bad_2
+    patch_pipeline(monkeypatch, fails=set(bad_1) | set(bad_2))
+    run = ledger.start_run("t")
+    ledger.queue(run, ids)
+
+    runner.run_batch(
+        None, None, {}, ledger, run, ids,
+        apply_mode=True, report_dir=tmp_path,
+    )
+
+    counts = ledger.counts(run)
+    assert counts[STATE_FAILED] == len(bad_1) + len(bad_2)
+    assert counts[STATE_OK] == 1
+    assert counts.get(STATE_PENDING, 0) == 0, "the run must not have aborted"
+
+
+def test_a_skip_also_resets_the_counter(monkeypatch, ledger, tmp_path):
+    n = runner.MAX_CONSECUTIVE_FAILURES - 1
+    bad_1 = list(range(1, n + 1))
+    bad_2 = list(range(1000, 1000 + n))
+    ids = bad_1 + [999] + bad_2
+    patch_pipeline(monkeypatch, fails=set(bad_1) | set(bad_2), migrated={999})
+    run = ledger.start_run("t")
+    ledger.queue(run, ids)
+
+    runner.run_batch(
+        None, None, {}, ledger, run, ids,
+        apply_mode=True, report_dir=tmp_path,
+    )
+
+    counts = ledger.counts(run)
+    assert counts[STATE_FAILED] == len(bad_1) + len(bad_2)
+    assert counts[STATE_SKIPPED] == 1
+    assert counts.get(STATE_PENDING, 0) == 0, "the run must not have aborted"
+
+
+def test_fewer_than_the_threshold_does_not_abort(monkeypatch, ledger, tmp_path):
+    ids = list(range(1, runner.MAX_CONSECUTIVE_FAILURES))
+    patch_pipeline(monkeypatch, fails=set(ids))
+    run = ledger.start_run("t")
+    ledger.queue(run, ids)
+
+    runner.run_batch(
+        None, None, {}, ledger, run, ids,
+        apply_mode=True, report_dir=tmp_path,
+    )
+
+    counts = ledger.counts(run)
+    assert counts[STATE_FAILED] == len(ids)
+    assert counts.get(STATE_PENDING, 0) == 0
+
+
+# -- M8: a report-file write failure must not read as a migration failure ----
+
+
+def test_a_report_write_failure_does_not_mark_the_item_failed(
+    monkeypatch, ledger, tmp_path
+):
+    """A disk-full mid-run used to be caught by the pipeline's own broad
+    except and marked `failed`, even though the migration itself - already
+    committed to GLPI - had succeeded."""
+    patch_pipeline(monkeypatch)
+    run = ledger.start_run("t")
+    ledger.queue(run, [1])
+
+    def boom_write_text(self, *_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_text", boom_write_text)
+
+    runner.run_batch(
+        None, None, {}, ledger, run, [1],
+        apply_mode=True, report_dir=tmp_path,
+    )
+
+    counts = ledger.counts(run)
+    assert counts[STATE_OK] == 1
+    assert counts.get(STATE_FAILED, 0) == 0
+    assert not (tmp_path / "RDM1.txt").exists()
 
 
 def test_dry_run_is_the_default():

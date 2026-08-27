@@ -81,17 +81,26 @@ class MarkerGlpi:
 class FakeRedmine:
     def __init__(self, issues):
         self._issues = issues
+        self.calls = []
 
-    def iter_issues(self, tracker_id, page_size=100):
+    def iter_issues(self, tracker_id, page_size=100, project_id=None):
+        self.calls.append((tracker_id, project_id))
         for issue in self._issues:
-            if issue["tracker"]["id"] == tracker_id:
-                yield issue
+            if issue["tracker"]["id"] != tracker_id:
+                continue
+            if project_id is not None and issue.get("project", {}).get(
+                "identifier"
+            ) not in (None, project_id):
+                continue
+            yield issue
 
 
-def issue(iid, tracker=14, parent=None):
+def issue(iid, tracker=14, parent=None, project=None):
     row = {"id": iid, "tracker": {"id": tracker}}
     if parent:
         row["parent"] = {"id": parent}
+    if project:
+        row["project"] = {"identifier": project}
     return row
 
 
@@ -152,3 +161,40 @@ def test_limit_slices_after_the_subtraction_not_before():
 
     # 1 and 2 are already migrated; the first two PENDING roots are 3 and 4.
     assert pending_roots(glpi, redmine, 14, limit=2) == [3, 4]
+
+
+# -- I7: --project must actually scope by project, not merely by tracker -----
+
+
+def test_candidate_roots_passes_project_id_through_to_iter_issues():
+    """The tracker filter alone happened to give the same answer only because
+    each root tracker was measured to live in exactly one project. --project
+    must query Redmine's own project_id filter, not lean on that accident."""
+    redmine = FakeRedmine([issue(1, project="hydro")])
+
+    candidate_roots(redmine, 42, project_id="hydro")
+
+    assert redmine.calls == [(42, "hydro")]
+
+
+def test_candidate_roots_without_a_project_id_queries_the_whole_tracker():
+    """audit_coverage.py deliberately sweeps a tracker across the whole
+    instance - the parameter must stay optional for that caller."""
+    redmine = FakeRedmine([issue(1)])
+
+    candidate_roots(redmine, 42)
+
+    assert redmine.calls == [(42, None)]
+
+
+def test_pending_roots_passes_project_id_through():
+    glpi = MarkerGlpi([])
+    redmine = FakeRedmine([
+        issue(1, tracker=14, project="projetos-telecom"),
+        issue(2, tracker=14, project="hydro"),
+    ])
+
+    result = pending_roots(glpi, redmine, 14, project_id="projetos-telecom")
+
+    assert redmine.calls == [(14, "projetos-telecom")]
+    assert result == [1]

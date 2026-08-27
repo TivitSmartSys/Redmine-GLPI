@@ -86,10 +86,27 @@ def main(argv: list[str] | None = None) -> int:
             with BatchLedger(args.db) as ledger:
                 if args.resume:
                     run_id = str(args.resume)
+                    if not ledger.run_exists(run_id):
+                        # An unknown id yields an empty queue, which is
+                        # indistinguishable from a finished run. Say so, and
+                        # exit as a configuration error rather than as success.
+                        print(
+                            messages.BATCH_RUN_NOT_FOUND.format(
+                                run_id=run_id, db=args.db
+                            ),
+                            file=sys.stderr,
+                        )
+                        return EXIT_CONFIG
                     queue = ledger.pending(run_id)
                 else:
                     run_id = ledger.start_run(args.project)
-                    queue = pending_roots(glpi, redmine, tracker, limit=args.limit)
+                    # The Redmine project identifier is passed as well as the
+                    # tracker: --project must scope by project, not merely by a
+                    # tracker that happens to live in one.
+                    queue = pending_roots(
+                        glpi, redmine, tracker,
+                        limit=args.limit, project_id=args.project,
+                    )
                     ledger.queue(run_id, queue)
 
                 print(messages.BATCH_QUEUE.format(count=len(queue), run_id=run_id))
@@ -108,9 +125,23 @@ def main(argv: list[str] | None = None) -> int:
                     skip_attachments=args.skip_attachments, skip_notes=args.skip_notes,
                 )
 
+                # The phase-0 record is a nice-to-have appendix; the summary
+                # it would be appended to is the record of thousands of writes
+                # that already happened. An unreadable file (not merely a
+                # missing one) must not take that summary down with it.
                 purge_record = None
-                if args.purge_record and Path(args.purge_record).exists():
-                    purge_record = Path(args.purge_record).read_text(encoding="utf-8")
+                if args.purge_record:
+                    record_path = Path(args.purge_record)
+                    if record_path.exists():
+                        try:
+                            purge_record = record_path.read_text(encoding="utf-8")
+                        except (OSError, UnicodeDecodeError) as exc:
+                            print(
+                                messages.BATCH_PURGE_RECORD_UNREADABLE.format(
+                                    path=record_path, detail=messages.redact(exc)
+                                ),
+                                file=sys.stderr,
+                            )
 
                 summary = render_summary(ledger, run_id, args.project, purge_record)
                 summary_path = report_dir / "resumo.txt"

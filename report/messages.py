@@ -799,16 +799,18 @@ PURGE_ITEM_FAILED = (
     "  FALHA em {itemtype} {row_id} do projeto {project_id}: {detail}"
 )
 PURGE_SUMMARY = (
-    "Removidos {projects} projetos, {containers} linhas de container, "
-    "{notes} notas, {links} vínculos de documento. Falhas: {failed}."
+    "Removidos {projects} projetos, {tasks} tarefas, {containers} linhas de "
+    "container, {notes} notas, {links} vínculos de documento. "
+    "Falhas: {failed}."
 )
 PURGE_VERIFY_OK = (
     "Verificação: restam {projects} projetos e {containers} linhas de container 15, "
-    "todas pertencentes aos projetos preservados."
+    "todas pertencentes aos projetos preservados ({stray} órfãs)."
 )
 PURGE_VERIFY_FAILED = (
     "Verificação FALHOU: restam {projects} projetos e {containers} linhas de "
-    "container 15. Esperado {expected_projects} e somente linhas preservadas."
+    "container 15, das quais {stray} não pertencem a nenhum projeto vivo. "
+    "Esperado {expected_projects} projetos e somente linhas preservadas."
 )
 PURGE_REPORT_SAVED = "Registro da limpeza salvo em {path}"
 UI_JOB_NOT_FOUND = "Execução não encontrada ou já expirada."
@@ -919,4 +921,37 @@ BATCH_QUEUE = "Fila: {count} raízes. Execução {run_id}."
 BATCH_NOTHING_TO_DO = "Nada pendente: todas as raízes já estão no GLPI."
 BATCH_CONFIRM_PROMPT = (
     "Isto vai criar até {count} projetos no GLPI. Digite 'sim' para continuar: "
+)
+
+# -- fix wave 2026-08-27: batch abort, report failures, orphan container rows -
+
+# batch/runner.py - a dead GLPI session must end the run, not manufacture
+# thousands of identical "failures" that the ledger cannot tell from real ones.
+BATCH_ABORTED_CONSECUTIVE = (
+    "ABORTADO: {count} falhas consecutivas. A sessão do GLPI provavelmente "
+    "caiu — as tentativas seguintes seriam inúteis. Os itens restantes "
+    "continuam pendentes; retome com --resume {run_id}."
+)
+BATCH_REPORT_WRITE_FAILED = (
+    "  AVISO: RDM {issue_id} foi migrado, mas o relatório não pôde ser "
+    "gravado em {path}: {detail}"
+)
+
+# migrate_batch.py
+BATCH_PURGE_RECORD_UNREADABLE = (
+    "AVISO: o registro da fase 0 em {path} não pôde ser lido ({detail}). "
+    "O resumo segue sem ele."
+)
+BATCH_RUN_NOT_FOUND = (
+    "Execução '{run_id}' não existe no livro-razão ({db}). Verifique o "
+    "identificador; uma fila vazia não é o mesmo que uma execução concluída."
+)
+
+# purge_import.py - container-15 rows whose host project is already gone are
+# exactly the poison this phase removes, and were previously never selected.
+PURGE_ORPHAN_HEADER = (
+    "Linhas de container 15 órfãs (o projeto hospedeiro já não existe): {count}"
+)
+PURGE_ORPHAN_LINE = (
+    "  linhas {rows} | ex-projeto {project_id} | marcador {marker}"
 )

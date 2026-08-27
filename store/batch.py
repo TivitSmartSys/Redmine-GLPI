@@ -63,6 +63,18 @@ class BatchLedger:
         self._conn.commit()
         return run_id
 
+    def run_exists(self, run_id: str) -> bool:
+        """Is this a run this ledger has ever started?
+
+        --resume on an unknown id used to produce an empty queue and exit 0,
+        which reads exactly like a completed run. The batch_run table is the
+        only place that can tell the two apart.
+        """
+        row = self._conn.execute(
+            "SELECT 1 FROM batch_run WHERE run_id = ?", (str(run_id),)
+        ).fetchone()
+        return row is not None
+
     def queue(self, run_id: str, issue_ids: list[int]) -> None:
         now = _now()
         self._conn.executemany(

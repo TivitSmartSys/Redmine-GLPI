@@ -25,11 +25,29 @@ from pathlib import Path
 
 from clients.errors import ApiError
 from clients.glpi import GlpiClient
-from config.settings import ConfigError, ITEMTYPE_ADDITIONAL_FIELDS, load_settings
+from config.settings import (
+    ConfigError,
+    ITEMTYPE_ADDITIONAL_FIELDS,
+    ITEMTYPE_FATURAMENTO,
+    load_settings,
+)
 from report import messages
 
 # Projects created on this date belong to the poisoned bulk import.
 IMPORT_DATE = "2026-06-06"
+
+# ...but the date alone stopped being sufficient on 2026-08-27, when the
+# migration began BACK-DATING date_creation from the Redmine issue's own
+# created_on. Any Redmine root created on 2026-06-06 now becomes a GLPI project
+# whose date_creation reads exactly IMPORT_DATE, so re-running this tool after a
+# batch migration would select real migrations and purge them - and
+# KEEP_PROJECT_IDS is hard-coded and never grows to protect them.
+#
+# 1298 is the highest id GLPI held when the poisoned import was measured (1274
+# projects, highest id 1298), so nothing above it can belong to that import;
+# everything above it was created after this tool was written. The explicit
+# TEST_PROJECT_IDS list stays an exact-match rule and is not bounded by this.
+MAX_IMPORT_PROJECT_ID = 1298
 
 # Throwaways from manual testing. Some postdate the import; 1263 is named
 # "RDM 16467 - ..." and would read as a real migration if left behind.
@@ -64,7 +82,8 @@ def select_targets(projects: list[dict]) -> list[int]:
         if not pid:
             continue
         created = str(row.get("date_creation") or "")[:10]
-        if created == IMPORT_DATE or pid in TEST_PROJECT_IDS:
+        from_import = created == IMPORT_DATE and pid <= MAX_IMPORT_PROJECT_ID
+        if from_import or pid in TEST_PROJECT_IDS:
             targets.append(pid)
 
     protected = sorted(set(targets) & KEEP_PROJECT_IDS)
@@ -83,6 +102,10 @@ class PurgeTarget:
     entities_id: int
     container_row_ids: list[int] = field(default_factory=list)
     marker: str = ""
+    # A container-15 row whose host project no longer exists. There is nothing
+    # to purge but the row itself - project_id names the host that is already
+    # gone, and purge_one must not try to delete it.
+    is_orphan: bool = False
 
 
 def build_purge_plan(glpi) -> list[PurgeTarget]:
@@ -97,22 +120,27 @@ def build_purge_plan(glpi) -> list[PurgeTarget]:
     target_ids = select_targets(projects)
     wanted = set(target_ids)
 
+    # An orphan container row - one whose host project is already gone - is
+    # PRECISELY the poison this tool exists to remove: it carries an rdmfield
+    # marker that outlives its project and keeps answering dedup for a project
+    # that no longer exists. Selecting only rows whose items_id is in the target
+    # set left every one of them behind, unmentioned.
+    live_ids = {int(p.get("id") or 0) for p in projects}
     rows_by_project: dict[int, list[dict]] = {}
+    orphan_rows: dict[int, list[dict]] = {}
     for row in glpi.iter_all_rows(ITEMTYPE_ADDITIONAL_FIELDS):
         host = int(row.get("items_id") or 0)
         if host in wanted:
             rows_by_project.setdefault(host, []).append(row)
+        elif host not in live_ids:
+            orphan_rows.setdefault(host, []).append(row)
 
     by_id = {int(p.get("id") or 0): p for p in projects}
     plan: list[PurgeTarget] = []
     for pid in target_ids:
         source = by_id.get(pid, {})
         rows = rows_by_project.get(pid, [])
-        marker = next(
-            (str(r.get("rdmfield") or "").strip() for r in rows
-             if str(r.get("rdmfield") or "").strip()),
-            "",
-        )
+        marker = _first_marker(rows)
         plan.append(
             PurgeTarget(
                 project_id=pid,
@@ -122,7 +150,28 @@ def build_purge_plan(glpi) -> list[PurgeTarget]:
                 marker=marker,
             )
         )
+
+    for host in sorted(orphan_rows):
+        rows = orphan_rows[host]
+        plan.append(
+            PurgeTarget(
+                project_id=host,
+                name="",
+                entities_id=0,
+                container_row_ids=[int(r["id"]) for r in rows],
+                marker=_first_marker(rows),
+                is_orphan=True,
+            )
+        )
     return plan
+
+
+def _first_marker(rows: list[dict]) -> str:
+    return next(
+        (str(r.get("rdmfield") or "").strip() for r in rows
+         if str(r.get("rdmfield") or "").strip()),
+        "",
+    )
 
 
 def render_purge_report(targets: list[PurgeTarget], applied: bool) -> str:
@@ -130,17 +179,34 @@ def render_purge_report(targets: list[PurgeTarget], applied: bool) -> str:
     the saved file is evidence and must say whether it is a preview or a
     record of what already happened."""
     header = messages.PURGE_HEADER_APPLIED if applied else messages.PURGE_HEADER_PLANNED
+    projects = [t for t in targets if not t.is_orphan]
+    orphans = [t for t in targets if t.is_orphan]
+
     lines = [header, "=" * len(header), ""]
-    lines.append(messages.PURGE_TARGET_COUNT.format(count=len(targets)))
+    lines.append(messages.PURGE_TARGET_COUNT.format(count=len(projects)))
     lines.append(messages.PURGE_KEPT_COUNT.format(count=len(KEEP_PROJECT_IDS)))
     lines.append("")
-    for target in targets:
+    for target in projects:
         lines.append(
             messages.PURGE_TARGET_LINE.format(
                 project_id=target.project_id,
                 entity=target.entities_id,
                 marker=target.marker or "-",
                 name=target.name[:60],
+            )
+        )
+
+    # Orphans get their own block: they are not projects and must not be
+    # counted as such, but they carry markers and cannot vanish from the
+    # record.
+    lines.append("")
+    lines.append(messages.PURGE_ORPHAN_HEADER.format(count=len(orphans)))
+    for target in orphans:
+        lines.append(
+            messages.PURGE_ORPHAN_LINE.format(
+                rows=", ".join(str(r) for r in target.container_row_ids),
+                project_id=target.project_id,
+                marker=target.marker or "-",
             )
         )
     return "\n".join(lines)
@@ -167,6 +233,10 @@ def build_parser() -> argparse.ArgumentParser:
 @dataclass
 class PurgeCounts:
     projects: int = 0
+    # Back since 2026-08-27, and only because it can now actually be
+    # incremented: purge_one removes ProjectTasks explicitly instead of
+    # trusting GLPI to cascade them.
+    tasks: int = 0
     containers: int = 0
     notes: int = 0
     links: int = 0
@@ -174,6 +244,7 @@ class PurgeCounts:
 
     def add(self, other: "PurgeCounts") -> None:
         self.projects += other.projects
+        self.tasks += other.tasks
         self.containers += other.containers
         self.notes += other.notes
         self.links += other.links
@@ -218,6 +289,42 @@ def purge_one(glpi, target: PurgeTarget) -> PurgeCounts:
             return counts
         counts.containers += 1
 
+    if target.is_orphan:
+        # There is no host project left to delete, and nothing hangs off a
+        # project that does not exist. The rows above were the whole job.
+        return counts
+
+    # Tasks and their container-26 rows, before the project.
+    #
+    # GLPI cascades ProjectTasks when a project is purged, but a Fields-plugin
+    # container row does NOT cascade - that is the entire reason
+    # reset_migration.py exists, and container 26 hangs off the TASK, not the
+    # project. Purging the project alone would strand one row per Faturamento.
+    #
+    # BEST EFFORT: a flat `GET /ProjectTask` was measured returning 0 rows for
+    # this whole instance on 2026-08-27, so an empty read is expected and is
+    # carried on from silently rather than treated as a failure. The June
+    # cascas have no tasks anyway; this is here for the ones that do.
+    for task in _project_tasks(glpi, target.project_id):
+        task_id = int(task.get("id") or 0)
+        if not task_id:
+            continue
+        stranded = False
+        for row in _container26_rows(glpi, task_id):
+            row_id = int(row.get("id") or 0)
+            if not row_id:
+                continue
+            if drop(ITEMTYPE_FATURAMENTO, row_id):
+                counts.containers += 1
+            else:
+                # Same inversion as above, one level down: deleting the task
+                # would strand the container-26 row that refused to go.
+                stranded = True
+        if stranded:
+            continue
+        if drop("ProjectTask", task_id):
+            counts.tasks += 1
+
     for note in glpi.notepad_rows("Project", target.project_id):
         if drop("Notepad", int(note["id"])):
             counts.notes += 1
@@ -231,16 +338,40 @@ def purge_one(glpi, target: PurgeTarget) -> PurgeCounts:
     return counts
 
 
-def verify_purge(glpi) -> tuple[int, int]:
-    """Re-read the two counts that prove the cleanup worked.
+def _project_tasks(glpi, project_id: int) -> list[dict]:
+    """Tasks of a project, or nothing. Never raises - see purge_one."""
+    try:
+        return glpi.project_tasks(project_id)
+    except ApiError:
+        return []
+
+
+def _container26_rows(glpi, task_id: int) -> list[dict]:
+    """Container-26 rows of one task, or nothing. Never raises."""
+    try:
+        return glpi.get_container_rows(ITEMTYPE_FATURAMENTO, task_id)
+    except ApiError:
+        return []
+
+
+def verify_purge(glpi) -> tuple[int, int, int]:
+    """Re-read the counts that prove the cleanup worked.
 
     The purge is not finished without this: it is the read that proves dedup is
     no longer poisoned. Returns (projects remaining, container-15 rows
-    remaining).
+    remaining, container-15 rows whose host project no longer exists).
+
+    The third number is the one that matters and used to be missing entirely.
+    A surviving project count of 9 says nothing about the markers: an orphan
+    container row answers find_by_rdmfield exactly as a live one does, so a run
+    that left orphans behind has not fixed dedup. After a correct run every
+    surviving row belongs to a kept project and this is 0.
     """
     projects = glpi.iter_all_rows("Project")
     containers = glpi.iter_all_rows(ITEMTYPE_ADDITIONAL_FIELDS)
-    return len(projects), len(containers)
+    live = {int(p.get("id") or 0) for p in projects}
+    stray = sum(1 for row in containers if int(row.get("items_id") or 0) not in live)
+    return len(projects), len(containers), stray
 
 
 EXIT_OK = 0
@@ -270,7 +401,10 @@ def main(argv: list[str] | None = None) -> int:
             try:
                 targets = build_purge_plan(glpi)
             except KeepListViolation as exc:
-                print(messages.PURGE_KEEP_VIOLATION.format(detail=exc), file=sys.stderr)
+                print(
+                    messages.PURGE_KEEP_VIOLATION.format(detail=messages.redact(exc)),
+                    file=sys.stderr,
+                )
                 return EXIT_FAILED
 
             report = render_purge_report(targets, applied=False)
@@ -291,17 +425,21 @@ def main(argv: list[str] | None = None) -> int:
 
             print()
             print(messages.PURGE_SUMMARY.format(
-                projects=totals.projects, containers=totals.containers,
-                notes=totals.notes, links=totals.links, failed=totals.failed,
+                projects=totals.projects, tasks=totals.tasks,
+                containers=totals.containers, notes=totals.notes,
+                links=totals.links, failed=totals.failed,
             ))
 
-            projects_left, containers_left = verify_purge(glpi)
+            projects_left, containers_left, stray_left = verify_purge(glpi)
             expected = len(KEEP_PROJECT_IDS)
-            ok = projects_left == expected
+            # Both halves, not just the project count. A surviving orphan row
+            # still answers find_by_rdmfield, so dedup would still be poisoned
+            # with exactly nine projects standing.
+            ok = projects_left == expected and stray_left == 0
             print(
                 (messages.PURGE_VERIFY_OK if ok else messages.PURGE_VERIFY_FAILED).format(
                     projects=projects_left, containers=containers_left,
-                    expected_projects=expected,
+                    stray=stray_left, expected_projects=expected,
                 )
             )
 
