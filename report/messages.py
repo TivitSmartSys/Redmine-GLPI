@@ -886,3 +886,9 @@ UI_CONFIG_NEVER_WRITE = "Colunas nunca gravadas"
 
 UI_EMPTY = "(nenhum)"
 UI_UNEXPECTED_ERROR = "Erro inesperado: {detail}"
+
+# -- migrate_batch.py (fase 1) ---------------------------------------------
+
+BATCH_ITEM_START = "[{position}/{total}] RDM {issue_id}"
+BATCH_ITEM_ALREADY = "já migrado no GLPI (projeto {glpi_id})"
+BATCH_ITEM_FAILED = "  FALHA em RDM {issue_id}: {detail}"
