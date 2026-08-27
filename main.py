@@ -475,11 +475,34 @@ def apply_plan(
     print(messages.APPLY_HEADER)
 
     # 1. Project - carries the container-15 values too, see the docstring above.
-    project_id = glpi.create_project(project_create_payload(plan))
+    #
+    #    Guarded by the local map exactly like steps 3 and 4. The case this
+    #    closes is documented in CLAUDE.md: a plugin `text` column over
+    #    VARCHAR(255) makes POST /Project fail AFTER GLPI committed the project
+    #    row (RDM 17444 -> project 1279), so the project exists with no
+    #    container-15 row and therefore no rdmfield marker. batch/runner.py
+    #    marks that item `failed`, store/batch.py lists `failed` in RETRYABLE,
+    #    and --resume re-queues it. Without this guard the retry finds no marker
+    #    and creates a SECOND project - an empty shell, because store.lookup DOES
+    #    hit for the tasks written on the first attempt and skips them all.
+    existing_project = store.lookup(plan.issue_id, "Project")
+    if existing_project:
+        project_id = existing_project.glpi_id
+        print(
+            messages.DEDUP_LOCAL_HIT.format(
+                issue_id=plan.issue_id, itemtype="Project", glpi_id=project_id
+            )
+        )
+    else:
+        project_id = glpi.create_project(project_create_payload(plan))
+        store.record(plan.issue_id, project_id, "Project", status=STATUS_OK)
+        print(
+            messages.APPLY_PROJECT_CREATED.format(
+                glpi_id=project_id, issue_id=plan.issue_id
+            )
+        )
     plan.glpi_project_id = project_id
     plan.glpi_ids[plan.issue_id] = project_id
-    store.record(plan.issue_id, project_id, "Project", status=STATUS_OK)
-    print(messages.APPLY_PROJECT_CREATED.format(glpi_id=project_id, issue_id=plan.issue_id))
 
     # 2. Container 15 - rdmfield is the dedup marker and must always be written.
     row_id = glpi.write_additional_fields_row(project_id, plan.container15.payload)
