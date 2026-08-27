@@ -14,6 +14,8 @@
 # Transform kinds:
 #   text     - verbatim + .strip(). NEVER parsed as a number.
 #   date     - verbatim yyyy-mm-dd; the key is omitted entirely when empty.
+#   datetime - Redmine's UTC timestamp -> a MySQL DATETIME on the GLPI server
+#              clock (UTC-3, measured 2026-08-27). Used only by date_creation.
 #   integer  - numeric passthrough (done_ratio)
 #   yesno    - "Não"/"Sim" -> 0/1; unrecognised value -> skip field + warning
 #   status   - via status_map.yml
@@ -100,6 +102,15 @@ project_core:
   - column: comment
     transform: text
     sources: [{from: custom_field, name: "NOTAS"}]
+
+  # Data de criação do issue no Redmine (attribute created_on, NOT a custom
+  # field). glpi_projects.date_creation is invisible in the GLPI form, which is
+  # why it needs no dictionary and no rights of its own - but GLPI does honour
+  # it on POST rather than stamping the server clock over it (verified live
+  # 2026-08-27 on throwaway project 1297, purged afterwards).
+  - column: date_creation
+    transform: datetime
+    sources: [{from: attribute, name: created_on}]
 
 # entities_id: TODO (spec 11.3, unresolved). The key is deliberately NOT sent -
 # GLPI creates the project in the API session's active entity. Do not guess.
@@ -375,6 +386,15 @@ task_core:
   - column: projecttasktypes_id
     transform: tasktype
     sources: [{from: attribute, name: tracker.id}]
+
+  # Data de criação do issue no Redmine (attribute created_on, NOT a custom
+  # field). glpi_projecttasks.date_creation is invisible in the GLPI form, which is
+  # why it needs no dictionary and no rights of its own - but GLPI does honour
+  # it on POST rather than stamping the server clock over it (verified live
+  # 2026-08-27 on throwaway task 14215, purged afterwards).
+  - column: date_creation
+    transform: datetime
+    sources: [{from: attribute, name: created_on}]
 
 # Task assignment is intentionally absent: glpi_projecttasks has no direct
 # assigned_to equivalent (it goes through ProjectTaskTeam). Spec 9.4 marks this

@@ -45,9 +45,10 @@ while the host project is alive; a project in the trash counts as orphaned.
 
 Exit codes: `0` ok, `1` failed/aborted, `2` configuration error.
 
-There is a pytest suite (`python -m pytest tests -q`, 129 tests) covering the
+There is a pytest suite (`python -m pytest tests -q`, 137 tests) covering the
 confirm gate, the summary figures, the VARCHAR(255) truncation, the client→entity
-map, the CEMIG scope rules and the root-tracker guard, and the attachment and
+map, the CEMIG scope rules and the root-tracker guard, the creation-date shift,
+and the attachment and
 note phases — host assignment, each section's own arithmetic, the line-anchored
 markers and apply degradation. There is no linter or build step.
 Real
@@ -272,6 +273,46 @@ scoped to a single host item. A Notepad row cannot outlive the item it hangs
 off, so "already migrated" can only ever mean "already on this item" — which is
 also why `reset_migration.py` has nothing to clean on the GLPI side for notes,
 only the local map.
+
+### The creation date comes from `created_on`
+
+Opened 2026-08-27, and it is the smallest phase in the file: two entries in
+`mapping.yml` and one transform. Redmine's `created_on` — a plain **attribute**
+of the issue, not a custom field — becomes `date_creation` on the Project and on
+every ProjectTask. It arrives with every issue the plan already reads, so unlike
+`journals` and `attachments` it needed no change to any `include` list.
+
+**GLPI honours `date_creation` on POST.** Verified live 2026-08-27 (GLPI 11.0.6)
+on a throwaway project 1297 and task 14215, both created with
+`2011-03-04 09:08:07` and both reading it back unchanged before being purged.
+`CommonDBTM::add()` does *not* stamp the server clock over a value supplied in
+the input, so there is no repair `PUT` and no second write anywhere in
+`apply_plan` — the value simply rides in the same payload as `name` and
+`content`.
+
+**The value is shifted, and that is the only judgement call here.** Redmine's
+REST API answers in UTC with a `Z`; this GLPI's server clock runs at **UTC-3**,
+measured in the same probe (`date_mod` `2026-08-27 10:35:24` while UTC read
+13:35). Copying the string verbatim would file every project three hours ahead
+of the timestamps GLPI writes for itself, and a whole **day** late for anything
+created after 21:00 local. `REDMINE_TO_GLPI_UTC_OFFSET_HOURS` in
+`config/settings.py` is the single number to change if GLPI moves to a server on
+a different clock.
+
+It is a fixed offset rather than a timezone database on purpose: `zoneinfo` has
+no `tzdata` on this machine, and the dependency would buy exactly one hour of
+accuracy on issues created during Brazilian DST — abolished in 2019, so 2016-2018
+summers only — on a column GLPI does not even show in its own forms.
+
+`datetime` is deliberately **its own transform**, not a widened `date`. `date`
+cuts the clock off, which is right for `plan_start_date` and `plan_end_date`;
+merging the two would teach those columns about timezones they have no business
+knowing. An unparsable value is `UNRESOLVED` and writes nothing, exactly like a
+bad `date`.
+
+**The 20-odd projects migrated before this date are not fixed by it** (1265-1292
+carry the date of their own migration). Backfilling them would be a separate
+run, and nothing in the code does it today.
 
 ### The project's entity comes from `Cliente`
 

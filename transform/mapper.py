@@ -9,6 +9,7 @@ consumed. Nothing can disappear silently.
 
 from __future__ import annotations
 
+import datetime as dt
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -17,11 +18,19 @@ from typing import Any
 from config.settings import (
     PLUGIN_CONTAINER_SECTIONS,
     PLUGIN_TEXT_MAX_LENGTH,
+    REDMINE_TO_GLPI_UTC_OFFSET_HOURS,
     TRACKER_TO_PROJECTTASKTYPE,
 )
 from resolve import entities as entity_status
 
 DATE_PATTERN = re.compile(r"^(\d{4}-\d{2}-\d{2})")
+
+# Redmine timestamps: "2016-03-30T15:59:29Z", and the same shape with a space
+# instead of the T or with no zone marker at all. The zone group is what decides
+# whether the value gets shifted - see _to_glpi_datetime.
+DATETIME_PATTERN = re.compile(
+    r"^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2}):(\d{2})\s*(Z|[+-]\d{2}:?\d{2})?$"
+)
 
 # yesno transform (spec 6.2). Redmine sends text, GLPI expects 0/1.
 YESNO_FALSE = {"não", "nao", "no", "n", "0", "false"}
@@ -109,6 +118,47 @@ def coerce_text(value: Any) -> str:
     if isinstance(value, bool):
         return "1" if value else "0"
     return str(value).strip()
+
+
+def to_glpi_datetime(raw: str) -> str | None:
+    """Redmine's `created_on` -> a MySQL DATETIME on the GLPI server's clock.
+
+    Returns None when the string is not a timestamp at all; the caller reports
+    that as UNRESOLVED and writes nothing (rule 2 - never invent a value).
+
+    The shift is applied only when the source names a zone. Redmine always
+    sends `Z`, so in practice every migrated value is shifted by
+    REDMINE_TO_GLPI_UTC_OFFSET_HOURS; a value that already carries no zone is
+    assumed to be on the target clock already and is passed through untouched.
+    An explicit offset ("+02:00") is honoured over the assumption.
+    """
+    match = DATETIME_PATTERN.match(raw.strip())
+    if not match:
+        return None
+
+    year, month, day, hour, minute, second = (int(g) for g in match.groups()[:6])
+    zone = match.group(7)
+    try:
+        moment = dt.datetime(year, month, day, hour, minute, second)
+    except ValueError:  # 2016-02-31 and friends
+        return None
+
+    if zone:
+        if zone == "Z":
+            source_offset = dt.timedelta(0)
+        else:
+            sign = -1 if zone[0] == "-" else 1
+            digits = zone[1:].replace(":", "")
+            source_offset = sign * dt.timedelta(
+                hours=int(digits[:2]), minutes=int(digits[2:])
+            )
+        moment = (
+            moment
+            - source_offset
+            + dt.timedelta(hours=REDMINE_TO_GLPI_UTC_OFFSET_HOURS)
+        )
+
+    return moment.strftime("%Y-%m-%d %H:%M:%S")
 
 
 def read_attribute(issue: dict, path: str) -> Any:
@@ -444,6 +494,21 @@ class Mapper:
             if not match:
                 return None, Outcome.UNRESOLVED, f"formato de data inválido: {raw!r}"
             return match.group(1), Outcome.WRITTEN, ""
+
+        # Separate from `date` on purpose: `date` cuts the clock off, which is
+        # right for plan_start_date and wrong for date_creation. Keeping one
+        # transform for both would mean teaching the date columns about
+        # timezones they have no business knowing (verified 2026-08-27 - see
+        # REDMINE_TO_GLPI_UTC_OFFSET_HOURS).
+        if transform == "datetime":
+            converted = to_glpi_datetime(raw)
+            if converted is None:
+                return (
+                    None,
+                    Outcome.UNRESOLVED,
+                    f"formato de data/hora inválido: {raw!r}",
+                )
+            return converted, Outcome.WRITTEN, ""
 
         if transform == "integer":
             try:
