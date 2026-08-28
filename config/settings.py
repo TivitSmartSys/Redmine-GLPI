@@ -308,6 +308,28 @@ PLUGIN_TEXT_MAX_LENGTH = 255
 # ProjectTask.comment) are TEXT and must NOT be truncated.
 PLUGIN_CONTAINER_SECTIONS = frozenset({"container15", "container26"})
 
+# ---------------------------------------------------------------------------
+# Creation date: Redmine speaks UTC, this GLPI's clock does not
+# ---------------------------------------------------------------------------
+# Redmine's REST API answers `created_on` in UTC with a `Z` suffix
+# ("2016-03-30T15:59:29Z" - measured on RDM 1240, 19074 and 20438). GLPI stores
+# `date_creation` as a plain MySQL DATETIME with no timezone attached, in
+# whatever the server clock says.
+#
+# Measured 2026-08-27: that clock runs at UTC-3. The probe that proved
+# `date_creation` is honoured at all (throwaway project 1297) was stamped
+# `date_mod` 2026-08-27 10:35:24 while UTC read 13:35. Copying the Redmine
+# string verbatim would therefore file every project three hours ahead of the
+# timestamps GLPI writes for itself, and a whole day late for anything created
+# after 21:00 local time.
+#
+# A fixed offset, not a timezone database: `zoneinfo` has no tzdata on this
+# machine, and adding the dependency would buy exactly one hour of accuracy on
+# issues created during Brazilian DST (abolished in 2019, so 2016-2018 summers
+# only) - on a column GLPI does not even show in its own forms. If GLPI ever
+# moves to a server on a different clock, this is the single number to change.
+REDMINE_TO_GLPI_UTC_OFFSET_HOURS = -3
+
 # GLPI right name for documents, read from GET /getActiveProfile at preflight.
 GLPI_RIGHTNAME_DOCUMENT = "document"
 GLPI_RIGHT_CREATE = 4
