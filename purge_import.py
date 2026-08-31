@@ -212,6 +212,36 @@ def render_purge_report(targets: list[PurgeTarget], applied: bool) -> str:
     return "\n".join(lines)
 
 
+# Where the purge record lands when --report is not given. Only a real run
+# writes it; a dry-run must not litter the disk with a file nobody asked for.
+DEFAULT_PURGE_RECORD = "reports/purge-record.txt"
+
+
+def save_report(
+    report_path: str | None, targets: list[PurgeTarget], applied: bool
+) -> Path | None:
+    """Write the purge record. Returns the path written, or None if none was.
+
+    A DRY-RUN MUST BE ABLE TO SAVE ITS PLAN. The list of what would be removed
+    is the evidence an operator reads BEFORE an irreversible run, so an explicit
+    --report is honoured whether or not --apply was given; it used to be
+    silently ignored because main() returned before reaching the write.
+
+    Without --report, only a real run writes the default file.
+    """
+    if report_path is None and not applied:
+        return None
+    path = Path(report_path or DEFAULT_PURGE_RECORD)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(render_purge_report(targets, applied=applied), encoding="utf-8")
+    return path
+
+
+def _announce_report(path: Path | None) -> None:
+    if path is not None:
+        print(messages.PURGE_REPORT_SAVED.format(path=path))
+
+
 def confirm_purge(count: int) -> bool:
     """Same gate as main.py's confirm_apply and reset_migration.py's
     confirm_reset: an explicit word, after the full report."""
@@ -412,11 +442,14 @@ def main(argv: list[str] | None = None) -> int:
 
             if not targets:
                 print(messages.PURGE_NOTHING_TO_DO)
+                _announce_report(save_report(args.report, targets, applied=False))
                 return EXIT_OK
             if not args.apply:
+                _announce_report(save_report(args.report, targets, applied=False))
                 return EXIT_OK
             if not (args.yes or confirm_purge(len(targets))):
                 print(messages.PURGE_CANCELLED)
+                _announce_report(save_report(args.report, targets, applied=False))
                 return EXIT_OK
 
             totals = PurgeCounts()
@@ -443,12 +476,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
             )
 
-            path = Path(args.report or "reports/purge-record.txt")
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(
-                render_purge_report(targets, applied=True), encoding="utf-8"
-            )
-            print(messages.PURGE_REPORT_SAVED.format(path=path))
+            _announce_report(save_report(args.report, targets, applied=True))
             return EXIT_OK if ok else EXIT_FAILED
     except ApiError as exc:
         print(messages.redact(exc), file=sys.stderr)

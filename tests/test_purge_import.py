@@ -434,3 +434,61 @@ def test_keep_violation_detail_is_redacted(monkeypatch, capsys):
     err = capsys.readouterr().err
     assert secret not in err
     assert messages.REDACTED in err
+
+
+# -- --report must work in dry-run -----------------------------------------
+#
+# It did not: main() returned at the `if not args.apply` gate before ever
+# reaching the write, so `purge_import.py --report x.txt` printed the plan and
+# silently saved nothing. That file is exactly the evidence an operator reads
+# BEFORE an irreversible purge, so a flag that quietly does nothing there is
+# worse than no flag at all.
+
+from purge_import import DEFAULT_PURGE_RECORD, save_report  # noqa: E402
+
+
+def a_target():
+    return [PurgeTarget(100, "Casca", 0, [7], "17343")]
+
+
+def test_report_flag_saves_the_plan_during_a_dry_run(tmp_path):
+    target = tmp_path / "plan.txt"
+
+    written = save_report(str(target), a_target(), applied=False)
+
+    assert written == target
+    text = target.read_text(encoding="utf-8")
+    assert "100" in text and "Casca" in text
+
+
+def test_a_dry_run_plan_is_labelled_planned_not_executed(tmp_path):
+    target = tmp_path / "plan.txt"
+
+    save_report(str(target), a_target(), applied=False)
+
+    text = target.read_text(encoding="utf-8")
+    assert messages.PURGE_HEADER_PLANNED in text
+    assert messages.PURGE_HEADER_APPLIED not in text
+
+
+def test_a_dry_run_without_the_flag_writes_nothing(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    assert save_report(None, a_target(), applied=False) is None
+    assert not (tmp_path / DEFAULT_PURGE_RECORD).exists()
+
+
+def test_a_real_run_without_the_flag_writes_the_default_record(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+
+    written = save_report(None, a_target(), applied=True)
+
+    assert written == Path(DEFAULT_PURGE_RECORD)
+    assert messages.PURGE_HEADER_APPLIED in written.read_text(encoding="utf-8")
+
+
+def test_report_flag_creates_a_missing_parent_directory(tmp_path):
+    target = tmp_path / "nested" / "deeper" / "plan.txt"
+
+    assert save_report(str(target), a_target(), applied=False) == target
+    assert target.exists()
