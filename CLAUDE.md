@@ -777,10 +777,20 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
   value; it is only observable by uploading.
 
   Measured bounds from that same run, both directions: the 11.3 MB `.docx` of
-  RDM 17582 uploaded fine, the 33.5 MB `.eml` did not. So the effective ceiling
-  sits **somewhere above 11 MB and below 33.5 MB** — the usual `php.ini`
-  defaults in that band are 8M/16M/32M. Do not narrow this by guessing; measure
-  it if it ever matters.
+  RDM 17582 uploaded fine, the 33.5 MB `.eml` did not.
+
+  **Narrowed 2026-08-31 by the first HYDRO batch, and it now matters.** RDM
+  20550 carries four attachments: the 5.2 MB `.xlsx` and the 1.0 MB `.pdf`
+  uploaded, while the **16.9 MB `.xlsx` and the 17.1 MB `.msg` both came back
+  `ERROR_UPLOAD_FILE_TOO_BIG_POST_MAX_SIZE`**. Combined with the 11.3 MB
+  success above, the effective ceiling sits **above 11.3 MB and below 16.9 MB**
+  — which points squarely at `post_max_size = 16M`, since PHP counts the whole
+  multipart body, not just the file.
+
+  The exposure is no longer theoretical: 2 of the 52 attachments in a 20-project
+  sample were refused, ~4%. Telecom is 5451 projects. Raise `php.ini` before
+  that run rather than after, or those files are simply reported and left in
+  Redmine.
 
   Raising it is a server-side change to `php.ini` — **both** `post_max_size` and
   `upload_max_filesize`, since `post_max_size` must stay the larger of the two.
