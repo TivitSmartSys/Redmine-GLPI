@@ -33,6 +33,7 @@ com os projetos 1289 e 1290.
 from __future__ import annotations
 
 import argparse
+import re
 import sqlite3
 import sys
 from dataclasses import dataclass
@@ -321,6 +322,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--out", default=None, help="Grava a tabela neste arquivo .md.")
     parser.add_argument(
+        "--pending-files",
+        default=None,
+        help="Grava a lista de anexos recusados pelo GLPI neste arquivo .md.",
+    )
+    parser.add_argument(
         "--html",
         default=None,
         help="Grava o painel HTML neste arquivo (para publicar como página).",
@@ -352,6 +358,18 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_CONFIG
     messages.register_secrets(settings.secret_values())
 
+    # A lista de pendências nasce só dos relatórios em disco. Quando é a única
+    # coisa pedida, não há motivo para abrir sessão com o GLPI nem ler o
+    # Redmine: sai na hora e funciona offline.
+    only_pending = args.pending_files and not (args.out or args.html or args.verify)
+    if only_pending:
+        pend = scan_pending_files()
+        path = Path(args.pending_files)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(render_pending(pend), encoding="utf-8")
+        print(f"Pendências salvas em {path} ({len(pend)} arquivo(s)).")
+        return EXIT_OK
+
     conn = sqlite3.connect(args.db)
     try:
         with GlpiClient(
@@ -372,6 +390,13 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_FAILED
     finally:
         conn.close()
+
+    if args.pending_files:
+        pend = scan_pending_files()
+        path = Path(args.pending_files)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(render_pending(pend), encoding='utf-8')
+        print(f'Pendências salvas em {path} ({len(pend)} arquivo(s)).')
 
     if args.html:
         path = Path(args.html)
@@ -501,6 +526,99 @@ def render_html(rows: list[Row], totals: dict) -> str:
         rows="\n        ".join(body),
         legend="\n      ".join(legend),
     )
+
+
+
+
+# -- pendências de upload manual -------------------------------------------
+#
+# Decisão do responsável, 2026-08-31: arquivos grandes demais para o
+# `post_max_size` do PHP não bloqueiam o lote e serão enviados à mão depois,
+# se forem necessários. Para isso é preciso saber QUAIS - e essa informação
+# nasce espalhada por um relatório por projeto, o que a 5451 projetos não é
+# consultável. Esta função a reúne numa lista de trabalho.
+#
+# A fonte são os relatórios já gravados em disco, não uma nova leitura do
+# Redmine: o que interessa é o que a migração de fato tentou e não conseguiu.
+
+_FAILED_LINE = re.compile(
+    r"^\s+- (?P<name>.+?)\s+\((?P<size>[\d.,]+ [KMG]?B)\)\s+\[FALHA(?P<why>[^\]]*)\]",
+)
+_PROJECT_LINE = re.compile(r"^\s+(?:Projeto|Tarefa) RDM (?P<rdm>\d+)")
+
+
+@dataclass
+class Pending:
+    redmine_id: int
+    host_label: str
+    filename: str
+    size: str
+    reason: str
+    report: str
+
+
+def scan_pending_files(reports_dir: str | Path = "reports") -> list[Pending]:
+    """Todo anexo que a migração tentou enviar e o GLPI recusou."""
+    found: list[Pending] = []
+    for path in sorted(Path(reports_dir).glob("*/RDM*.txt")):
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        host_rdm, host_label = 0, ""
+        for index, line in enumerate(lines):
+            host = _PROJECT_LINE.match(line)
+            if host:
+                host_rdm = int(host.group("rdm"))
+                host_label = line.strip()[:80]
+            hit = _FAILED_LINE.match(line)
+            if not hit:
+                continue
+            reason = ""
+            for follow in lines[index + 1 : index + 3]:
+                if "Erro" in follow or "ERROR" in follow:
+                    reason = follow.strip()
+                    break
+            found.append(
+                Pending(
+                    redmine_id=host_rdm,
+                    host_label=host_label,
+                    filename=hit.group("name").strip(),
+                    size=hit.group("size"),
+                    reason=reason or hit.group("why").strip(),
+                    report=str(path),
+                )
+            )
+    return found
+
+
+def render_pending(items: list[Pending]) -> str:
+    lines = [
+        "# Arquivos para envio manual",
+        "",
+        f"Gerado em {datetime.now():%Y-%m-%d %H:%M:%S} por "
+        "`migration_status.py --pending-files`.",
+        "",
+        "Anexos que a migração tentou enviar e o GLPI recusou. Eles continuam "
+        "no Redmine, intactos — a migração nunca escreve na origem. O projeto e "
+        "as tarefas correspondentes já existem no GLPI; falta só o arquivo.",
+        "",
+    ]
+    if not items:
+        lines += ["Nenhuma pendência: todo anexo encontrado foi enviado.", ""]
+        return "\n".join(lines)
+
+    lines += [
+        f"**{len(items)} arquivo(s) pendente(s).**",
+        "",
+        "| RDM | Arquivo | Tamanho | Motivo |",
+        "|---:|---|---:|---|",
+    ]
+    for item in items:
+        name = item.filename.replace("|", "\\|")
+        reason = item.reason.replace("|", "\\|")[:90]
+        lines.append(
+            f"| {item.redmine_id} | {name} | {item.size} | {reason} |"
+        )
+    lines.append("")
+    return "\n".join(lines)
 
 
 if __name__ == "__main__":
