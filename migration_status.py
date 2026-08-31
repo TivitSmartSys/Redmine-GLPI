@@ -33,6 +33,7 @@ com os projetos 1289 e 1290.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sqlite3
 import sys
@@ -159,49 +160,73 @@ def collect(
 
     out: list[Row] = []
     for redmine_id, glpi_id in pairs:
-        project = glpi.get_item("Project", glpi_id)
-        if project is None:
+        try:
+            row = _read_one(glpi, conn, redmine, redmine_id, glpi_id)
+        except ApiError as exc:
+            # Uma leitura perdida não pode custar a varredura inteira. Aconteceu
+            # em 2026-08-31: um RemoteDisconnected do GLPI no meio de 684
+            # projetos derrubou 45 minutos de leitura e não sobrou nada.
+            print(
+                f"  [AVISO] RDM {redmine_id} (GLPI {glpi_id}) não pôde ser lido: "
+                f"{messages.redact(exc)}",
+                file=sys.stderr,
+            )
             continue
-
-        # Sem linha de Project no mapa, a árvore é invisível para nós: o GLPI
-        # não lista ProjectTask por rota nenhuma nesta instância.
-        tracked = conn.execute(
-            "SELECT 1 FROM migration_map WHERE redmine_id = ? AND glpi_itemtype = 'Project'",
-            (redmine_id,),
-        ).fetchone() is not None
-
-        tree_ids = tree_redmine_ids(conn, redmine_id) or [redmine_id]
-        task_ids = task_ids_for(conn, tree_ids) if tracked else []
-
-        notes = len(glpi.notepad_rows("Project", glpi_id))
-        documents = len(glpi.document_links("Project", glpi_id))
-        for task_id in task_ids:
-            notes += len(glpi.notepad_rows("ProjectTask", task_id))
-            documents += len(glpi.document_links("ProjectTask", task_id))
-
-        entity_id = int(project.get("entities_id") or 0)
-        row = Row(
-            redmine_id=redmine_id,
-            glpi_id=glpi_id,
-            name=str(project.get("name") or "").strip(),
-            entity=entities.get(entity_id, str(entity_id)),
-            created=str(project.get("date_creation") or "")[:19],
-            tasks=len(task_ids) if tracked else None,
-            notes=notes,
-            documents=documents,
-        )
-
-        if redmine is not None:
-            # O tracker é lido SEMPRE que há Redmine, mesmo sem mapa local:
-            # ele diz a qual projeto do Redmine esta raiz pertence, e o painel
-            # conta o progresso por projeto. Ler só nas linhas rastreáveis
-            # subnotificava o progresso justamente nas linhas que já são as
-            # mais opacas - 5 de 5451 em vez de 7, no primeiro teste.
-            _fill_tracker(row, redmine)
-            if tracked:
-                _fill_expected(row, redmine)
-        out.append(row)
+        if row is not None:
+            out.append(row)
     return out
+
+
+def _read_one(
+    glpi: GlpiClient,
+    conn: sqlite3.Connection,
+    redmine: RedmineClient | None,
+    redmine_id: int,
+    glpi_id: int,
+) -> Row | None:
+    """Uma linha da tabela. Levanta ApiError se o GLPI não responder."""
+    project = glpi.get_item("Project", glpi_id)
+    if project is None:
+        return None
+
+    # Sem linha de Project no mapa, a árvore é invisível para nós: o GLPI
+    # não lista ProjectTask por rota nenhuma nesta instância.
+    tracked = conn.execute(
+        "SELECT 1 FROM migration_map WHERE redmine_id = ? AND glpi_itemtype = 'Project'",
+        (redmine_id,),
+    ).fetchone() is not None
+
+    tree_ids = tree_redmine_ids(conn, redmine_id) or [redmine_id]
+    task_ids = task_ids_for(conn, tree_ids) if tracked else []
+
+    notes = len(glpi.notepad_rows("Project", glpi_id))
+    documents = len(glpi.document_links("Project", glpi_id))
+    for task_id in task_ids:
+        notes += len(glpi.notepad_rows("ProjectTask", task_id))
+        documents += len(glpi.document_links("ProjectTask", task_id))
+
+    entity_id = int(project.get("entities_id") or 0)
+    row = Row(
+        redmine_id=redmine_id,
+        glpi_id=glpi_id,
+        name=str(project.get("name") or "").strip(),
+        entity=entities.get(entity_id, str(entity_id)),
+        created=str(project.get("date_creation") or "")[:19],
+        tasks=len(task_ids) if tracked else None,
+        notes=notes,
+        documents=documents,
+    )
+
+    if redmine is not None:
+        # O tracker é lido SEMPRE que há Redmine, mesmo sem mapa local:
+        # ele diz a qual projeto do Redmine esta raiz pertence, e o painel
+        # conta o progresso por projeto. Ler só nas linhas rastreáveis
+        # subnotificava o progresso justamente nas linhas que já são as
+        # mais opacas - 5 de 5451 em vez de 7, no primeiro teste.
+        _fill_tracker(row, redmine)
+        if tracked:
+            _fill_expected(row, redmine)
+    return row
 
 
 def _fill_tracker(row: Row, redmine: RedmineClient) -> None:
@@ -313,6 +338,32 @@ def _cell(actual: int | None, expected: int | None) -> str:
     return f"**{actual} / {expected}**"
 
 
+# A leitura completa com --verify custa dezenas de minutos: um GET de árvore
+# por projeto. Guardá-la em disco significa que mudar a APRESENTAÇÃO nunca
+# mais exige repetir a LEITURA - foi o que aconteceu em 2026-08-31, quando um
+# ajuste no template custou uma varredura inteira, e a repetição dela morreu
+# num RemoteDisconnected sem deixar nada.
+CACHE_PATH = Path("reports/status-cache.json")
+
+
+def save_cache(rows: list[Row]) -> None:
+    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CACHE_PATH.write_text(
+        json.dumps(
+            {"saved_at": f"{datetime.now():%Y-%m-%d %H:%M:%S}",
+             "rows": [vars(r) for r in rows]},
+            ensure_ascii=False,
+            indent=1,
+        ),
+        encoding="utf-8",
+    )
+
+
+def load_cache() -> list[Row]:
+    payload = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+    return [Row(**item) for item in payload["rows"]]
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="migration_status.py",
@@ -321,6 +372,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--out", default=None, help="Grava a tabela neste arquivo .md.")
+    parser.add_argument(
+        "--from-cache",
+        action="store_true",
+        help=(
+            "Renderiza a partir da última leitura salva, sem tocar no GLPI "
+            "nem no Redmine. Use ao mudar só a apresentação."
+        ),
+    )
     parser.add_argument(
         "--pending-files",
         default=None,
@@ -370,6 +429,15 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Pendências salvas em {path} ({len(pend)} arquivo(s)).")
         return EXIT_OK
 
+    if args.from_cache:
+        if not CACHE_PATH.exists():
+            print(f"Sem leitura salva em {CACHE_PATH}.", file=sys.stderr)
+            return EXIT_FAILED
+        rows = load_cache()
+        print(f"Renderizando de {CACHE_PATH} ({len(rows)} projetos), sem ler o GLPI.")
+        _emit(args, rows, verified=any(r.verified for r in rows))
+        return EXIT_OK
+
     conn = sqlite3.connect(args.db)
     try:
         with GlpiClient(
@@ -398,13 +466,19 @@ def main(argv: list[str] | None = None) -> int:
         path.write_text(render_pending(pend), encoding='utf-8')
         print(f'Pendências salvas em {path} ({len(pend)} arquivo(s)).')
 
+    save_cache(rows)
+    _emit(args, rows, verified=args.verify)
+    return EXIT_OK
+
+
+def _emit(args, rows: list[Row], verified: bool) -> None:
     if args.html:
         path = Path(args.html)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(render_html(rows, progress_totals(rows)), encoding="utf-8")
         print(f"Painel salvo em {path} ({len(rows)} projetos).")
 
-    text = render(rows, verified=args.verify)
+    text = render(rows, verified=verified)
     if args.out:
         path = Path(args.out)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -412,7 +486,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Tabela salva em {path} ({len(rows)} projetos).")
     else:
         print(text)
-    return EXIT_OK
 
 
 
@@ -511,21 +584,24 @@ def render_html(rows: list[Row], totals: dict) -> str:
         )
 
     pct = totals["projects"] / totals["scope"] * 100 if totals["scope"] else 0
-    stamp = f"{datetime.now():%Y-%m-%d %H:%M:%S}"
-    return _PAGE.format(
-        stamp=stamp,
-        projects=totals["projects"],
-        scope=totals["scope"],
-        remaining=totals["scope"] - totals["projects"],
-        pct=f"{pct:.2f}",
-        tasks=totals["tasks"],
-        notes=totals["notes"],
-        documents=totals["documents"],
-        diverging=totals["diverging"],
-        untracked=totals["untracked"],
-        rows="\n        ".join(body),
-        legend="\n      ".join(legend),
-    )
+    values = {
+        "STAMP": f"{datetime.now():%Y-%m-%d %H:%M:%S}",
+        "PROJECTS": str(totals["projects"]),
+        "SCOPE": str(totals["scope"]),
+        "REMAINING": str(totals["scope"] - totals["projects"]),
+        "PCT": f"{pct:.2f}",
+        "TASKS": str(totals["tasks"]),
+        "NOTES": str(totals["notes"]),
+        "DOCUMENTS": str(totals["documents"]),
+        "DIVERGING": str(totals["diverging"]),
+        "UNTRACKED": str(totals["untracked"]),
+        "ROWS": "\n        ".join(body),
+        "LEGEND": "\n      ".join(legend),
+    }
+    page = _PAGE
+    for token, value in values.items():
+        page = page.replace(f"%%{token}%%", value)
+    return page
 
 
 

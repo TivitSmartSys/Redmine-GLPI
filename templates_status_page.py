@@ -1,11 +1,17 @@
-"""Template do painel HTML gerado por migration_status.py."""
+"""Template do painel HTML gerado por migration_status.py.
+
+Substituição por token %%NOME%%, não str.format: a página tem CSS e
+JavaScript, e ambos são feitos de chaves. Com format, cada chave teria
+de ser duplicada no template - uma armadilha silenciosa que quebra na
+primeira linha de script adicionada.
+"""
 
 PAGE = r'''<title>Migração Redmine → GLPI</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap">
 <style>
-  :root {{
+  :root {
     --ground:      #EDF0F2;
     --surface:     #FFFFFF;
     --surface-alt: #F5F7F8;
@@ -26,10 +32,10 @@ PAGE = r'''<title>Migração Redmine → GLPI</title>
 
     --sans: "IBM Plex Sans", ui-sans-serif, system-ui, "Segoe UI", Roboto, sans-serif;
     --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-  }}
+  }
 
-  @media (prefers-color-scheme: dark) {{
-    :root:not([data-theme="light"]) {{
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
       --ground:      #0C1216;
       --surface:     #131B21;
       --surface-alt: #18222A;
@@ -47,10 +53,10 @@ PAGE = r'''<title>Migração Redmine → GLPI</title>
       --unknown:     #8797A2;
       --unknown-soft:#1D272E;
       --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
-    }}
-  }}
+    }
+  }
 
-  :root[data-theme="dark"] {{
+  :root[data-theme="dark"] {
     --ground:      #0C1216;
     --surface:     #131B21;
     --surface-alt: #18222A;
@@ -68,173 +74,173 @@ PAGE = r'''<title>Migração Redmine → GLPI</title>
     --unknown:     #8797A2;
     --unknown-soft:#1D272E;
     --shadow:      0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.6);
-  }}
+  }
 
-  * {{ box-sizing: border-box; }}
+  * { box-sizing: border-box; }
 
-  body {{
+  body {
     background: var(--ground);
     color: var(--ink);
     font-family: var(--sans);
     font-size: 15px;
     line-height: 1.55;
     -webkit-font-smoothing: antialiased;
-  }}
+  }
 
-  .wrap {{
+  .wrap {
     max-width: 1120px;
     margin: 0 auto;
     padding: 40px 24px 72px;
     display: flex;
     flex-direction: column;
     gap: 28px;
-  }}
+  }
 
   /* ---- header ---- */
-  .head {{ display: flex; flex-direction: column; gap: 10px; }}
+  .head { display: flex; flex-direction: column; gap: 10px; }
 
-  .eyebrow {{
+  .eyebrow {
     font-family: var(--mono);
     font-size: 11px;
     font-weight: 500;
     letter-spacing: .14em;
     text-transform: uppercase;
     color: var(--accent);
-  }}
+  }
 
-  h1 {{
+  h1 {
     margin: 0;
     font-size: clamp(28px, 4vw, 40px);
     font-weight: 600;
     letter-spacing: -.02em;
     text-wrap: balance;
-  }}
+  }
 
-  .sub {{
+  .sub {
     margin: 0;
     max-width: 66ch;
     color: var(--ink-2);
-  }}
+  }
 
-  .stamp {{
+  .stamp {
     font-family: var(--mono);
     font-size: 12px;
     color: var(--muted);
-  }}
+  }
 
   /* ---- progress ---- */
-  .panel {{
+  .panel {
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: 10px;
     box-shadow: var(--shadow);
-  }}
+  }
 
-  .progress {{ padding: 22px 24px 24px; display: flex; flex-direction: column; gap: 18px; }}
+  .progress { padding: 22px 24px 24px; display: flex; flex-direction: column; gap: 18px; }
 
-  .progress-top {{
+  .progress-top {
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
     justify-content: space-between;
     gap: 12px;
-  }}
+  }
 
-  .progress-figure {{
+  .progress-figure {
     font-family: var(--mono);
     font-variant-numeric: tabular-nums;
     font-size: 30px;
     font-weight: 600;
     letter-spacing: -.02em;
-  }}
-  .progress-figure span {{ color: var(--muted); font-weight: 400; font-size: 20px; }}
+  }
+  .progress-figure span { color: var(--muted); font-weight: 400; font-size: 20px; }
 
-  .progress-label {{ font-size: 13px; color: var(--muted); }}
+  .progress-label { font-size: 13px; color: var(--muted); }
 
-  .bar {{
+  .bar {
     height: 10px;
     border-radius: 999px;
     background: var(--surface-alt);
     border: 1px solid var(--line-soft);
     overflow: hidden;
     display: flex;
-  }}
-  .bar i {{ display: block; height: 100%; background: var(--accent); }}
+  }
+  .bar i { display: block; height: 100%; background: var(--accent); }
 
-  .legend {{
+  .legend {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
     gap: 2px;
     border-top: 1px solid var(--line-soft);
     padding-top: 16px;
-  }}
-  .leg {{ display: flex; flex-direction: column; gap: 4px; padding-right: 16px; }}
-  .leg-name {{
+  }
+  .leg { display: flex; flex-direction: column; gap: 4px; padding-right: 16px; }
+  .leg-name {
     font-family: var(--mono);
     font-size: 12px;
     color: var(--ink-2);
     display: flex; align-items: center; gap: 7px;
-  }}
-  .dot {{ width: 8px; height: 8px; border-radius: 2px; flex: none; }}
-  .leg-num {{
+  }
+  .dot { width: 8px; height: 8px; border-radius: 2px; flex: none; }
+  .leg-num {
     font-family: var(--mono);
     font-variant-numeric: tabular-nums;
     font-size: 17px;
     font-weight: 500;
-  }}
-  .leg-num em {{ font-style: normal; color: var(--muted); font-weight: 400; font-size: 13px; }}
+  }
+  .leg-num em { font-style: normal; color: var(--muted); font-weight: 400; font-size: 13px; }
 
   /* ---- stat tiles ---- */
-  .tiles {{
+  .tiles {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
     gap: 12px;
-  }}
-  .tile {{
+  }
+  .tile {
     background: var(--surface);
     border: 1px solid var(--line);
     border-radius: 10px;
     padding: 16px 18px;
     display: flex; flex-direction: column; gap: 3px;
-  }}
-  .tile-k {{
+  }
+  .tile-k {
     font-family: var(--mono);
     font-size: 11px;
     letter-spacing: .1em;
     text-transform: uppercase;
     color: var(--muted);
-  }}
-  .tile-v {{
+  }
+  .tile-v {
     font-family: var(--mono);
     font-variant-numeric: tabular-nums;
     font-size: 26px;
     font-weight: 600;
     letter-spacing: -.02em;
-  }}
-  .tile-n {{ font-size: 12px; color: var(--muted); }}
-  .tile.flag {{ border-color: var(--warn); background: var(--warn-soft); }}
-  .tile.flag .tile-v, .tile.flag .tile-k {{ color: var(--warn); }}
-  .tile.flag .tile-n {{ color: var(--warn); opacity: .85; }}
+  }
+  .tile-n { font-size: 12px; color: var(--muted); }
+  .tile.flag { border-color: var(--warn); background: var(--warn-soft); }
+  .tile.flag .tile-v, .tile.flag .tile-k { color: var(--warn); }
+  .tile.flag .tile-n { color: var(--warn); opacity: .85; }
 
   /* ---- table ---- */
-  .table-head {{
+  .table-head {
     display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px;
     justify-content: space-between;
     padding: 0 2px;
-  }}
-  h2 {{
+  }
+  h2 {
     margin: 0;
     font-size: 17px;
     font-weight: 600;
     letter-spacing: -.01em;
-  }}
-  .hint {{ font-size: 13px; color: var(--muted); }}
+  }
+  .hint { font-size: 13px; color: var(--muted); }
 
-  .scroll {{ overflow-x: auto; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); }}
+  .scroll { overflow-x: auto; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); }
 
-  table {{ border-collapse: collapse; width: 100%; font-size: 13.5px; }}
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
 
-  thead th {{
+  thead th {
     position: sticky; top: 0;
     background: var(--surface-alt);
     text-align: left;
@@ -247,38 +253,38 @@ PAGE = r'''<title>Migração Redmine → GLPI</title>
     padding: 11px 12px;
     border-bottom: 1px solid var(--line);
     white-space: nowrap;
-  }}
-  thead th.num {{ text-align: right; }}
+  }
+  thead th.num { text-align: right; }
 
-  tbody td {{
+  tbody td {
     padding: 10px 12px;
     border-bottom: 1px solid var(--line-soft);
     vertical-align: baseline;
-  }}
-  tbody tr:last-child td {{ border-bottom: 0; }}
-  tbody tr:hover td {{ background: var(--surface-alt); }}
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background: var(--surface-alt); }
 
-  td.id, td.num {{
+  td.id, td.num {
     font-family: var(--mono);
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
-  }}
-  td.num {{ text-align: right; }}
-  td.id {{ color: var(--ink-2); }}
+  }
+  td.num { text-align: right; }
+  td.id { color: var(--ink-2); }
 
   /* severity stripe: state encoded in form, not only in words */
-  td.stripe {{
+  td.stripe {
     padding-left: 12px;
     border-left: 3px solid transparent;
-  }}
-  tr.is-ok td.stripe      {{ border-left-color: var(--ok); }}
-  tr.is-diverge td.stripe {{ border-left-color: var(--warn); }}
-  tr.is-nomap td.stripe   {{ border-left-color: var(--unknown); }}
+  }
+  tr.is-ok td.stripe      { border-left-color: var(--ok); }
+  tr.is-diverge td.stripe { border-left-color: var(--warn); }
+  tr.is-nomap td.stripe   { border-left-color: var(--unknown); }
 
-  .mismatch {{ color: var(--warn); font-weight: 600; }}
-  .qmark {{ color: var(--unknown); }}
+  .mismatch { color: var(--warn); font-weight: 600; }
+  .qmark { color: var(--unknown); }
 
-  .pill {{
+  .pill {
     display: inline-block;
     font-family: var(--mono);
     font-size: 11px;
@@ -287,57 +293,94 @@ PAGE = r'''<title>Migração Redmine → GLPI</title>
     padding: 2px 8px;
     border-radius: 999px;
     white-space: nowrap;
-  }}
-  .pill.ok      {{ background: var(--ok-soft);      color: var(--ok); }}
-  .pill.diverge {{ background: var(--warn-soft);    color: var(--warn); }}
-  .pill.nomap   {{ background: var(--unknown-soft); color: var(--unknown); }}
+  }
+  .pill.ok      { background: var(--ok-soft);      color: var(--ok); }
+  .pill.diverge { background: var(--warn-soft);    color: var(--warn); }
+  .pill.nomap   { background: var(--unknown-soft); color: var(--unknown); }
 
-  td.ent {{ color: var(--muted); font-size: 12px; white-space: nowrap; }}
-  td.name {{ min-width: 260px; }}
-  td.when {{ font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }}
+  td.ent { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  td.name { min-width: 260px; }
+  td.when { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
 
   /* ---- notes ---- */
-  .notes {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }}
-  .note {{
+  .notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
+  .note {
     background: var(--surface);
     border: 1px solid var(--line);
     border-left: 3px solid var(--accent);
     border-radius: 8px;
     padding: 16px 18px;
-  }}
-  .note.warn {{ border-left-color: var(--warn); }}
-  .note.grey {{ border-left-color: var(--unknown); }}
-  .note h3 {{
+  }
+  .note.warn { border-left-color: var(--warn); }
+  .note.grey { border-left-color: var(--unknown); }
+  .note h3 {
     margin: 0 0 6px;
     font-size: 13px;
     font-weight: 600;
     letter-spacing: .01em;
-  }}
-  .note p {{ margin: 0; font-size: 13px; color: var(--ink-2); }}
-  .note p + p {{ margin-top: 8px; }}
-  .note code {{
+  }
+  .note p { margin: 0; font-size: 13px; color: var(--ink-2); }
+  .note p + p { margin-top: 8px; }
+  .note code {
     font-family: var(--mono);
     font-size: 12px;
     background: var(--surface-alt);
     border: 1px solid var(--line-soft);
     border-radius: 4px;
     padding: 1px 5px;
-  }}
+  }
 
-  footer {{
+  footer {
     color: var(--muted);
     font-size: 12.5px;
     border-top: 1px solid var(--line);
     padding-top: 16px;
-  }}
-  footer code {{ font-family: var(--mono); }}
+  }
+  footer code { font-family: var(--mono); }
 
-  a {{ color: var(--accent); }}
-  a:focus-visible, tr:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 2px; }}
+  a { color: var(--accent); }
+  a:focus-visible, tr:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-  @media (prefers-reduced-motion: reduce) {{
-    * {{ animation: none !important; transition: none !important; }}
-  }}
+  @media (prefers-reduced-motion: reduce) {
+    * { animation: none !important; transition: none !important; }
+  }
+
+  /* ---- filtro ---- */
+  .filter { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .filter input[type="search"] {
+    font-family: var(--sans);
+    font-size: 13px;
+    color: var(--ink);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 7px 11px;
+    min-width: 240px;
+  }
+  .filter input[type="search"]:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 1px;
+    border-color: var(--accent);
+  }
+  .filter button {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: .04em;
+    color: var(--ink-2);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    padding: 7px 11px;
+    cursor: pointer;
+  }
+  .filter button:hover { border-color: var(--accent); color: var(--accent); }
+  .filter button[aria-pressed="true"] {
+    background: var(--accent-soft);
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .filter button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  tr[hidden] { display: none; }
 </style>
 
 <div class="wrap">
@@ -350,14 +393,14 @@ PAGE = r'''<title>Migração Redmine → GLPI</title>
       arquivos são conferidas contra a árvore de origem no Redmine — quando os dois
       lados divergem, a tabela mostra <span class="mismatch">o encontrado / o esperado</span>.
     </p>
-    <div class="stamp">Gerado em {stamp} por <code>migration_status.py --verify</code></div>
+    <div class="stamp">Gerado em %%STAMP%% por <code>migration_status.py --verify</code></div>
   </header>
 
   <section class="panel progress">
     <div class="progress-top">
       <div>
-        <div class="progress-figure">{projects} <span>/ {scope}</span></div>
-        <div class="progress-label">raízes migradas · faltam {remaining} · {pct}%</div>
+        <div class="progress-figure">%%PROJECTS%% <span>/ %%SCOPE%%</span></div>
+        <div class="progress-label">raízes migradas · faltam %%REMAINING%% · %%PCT%%%</div>
       </div>
       <div class="progress-label" style="text-align:right">
         Fase 0 concluída: 1262 projetos do import de 2026-06-06 removidos,<br>
@@ -365,45 +408,50 @@ PAGE = r'''<title>Migração Redmine → GLPI</title>
       </div>
     </div>
 
-    <div class="bar" role="img" aria-label="{projects} de {scope} raízes migradas">
-      <i style="width:{pct}%"></i>
+    <div class="bar" role="img" aria-label="%%PROJECTS%% de %%SCOPE%% raízes migradas">
+      <i style="width:%%PCT%%%"></i>
     </div>
 
     <div class="legend">
-      {legend}
+      %%LEGEND%%
     </section>
 
   <section class="tiles">
     <div class="tile">
       <div class="tile-k">Projetos</div>
-      <div class="tile-v">{projects}</div>
+      <div class="tile-v">%%PROJECTS%%</div>
       <div class="tile-n">no GLPI, com marcador</div>
     </div>
     <div class="tile">
       <div class="tile-k">Tarefas</div>
-      <div class="tile-v">{tasks}</div>
-      <div class="tile-n">{untracked} projeto(s) fora da contagem</div>
+      <div class="tile-v">%%TASKS%%</div>
+      <div class="tile-n">%%UNTRACKED%% projeto(s) fora da contagem</div>
     </div>
     <div class="tile">
       <div class="tile-k">Notas</div>
-      <div class="tile-v">{notes}</div>
+      <div class="tile-v">%%NOTES%%</div>
       <div class="tile-n">aba Notas</div>
     </div>
     <div class="tile">
       <div class="tile-k">Arquivos</div>
-      <div class="tile-v">{documents}</div>
+      <div class="tile-v">%%DOCUMENTS%%</div>
       <div class="tile-n">aba Documentos</div>
     </div>
     <div class="tile flag">
       <div class="tile-k">Divergem</div>
-      <div class="tile-v">{diverging}</div>
+      <div class="tile-v">%%DIVERGING%%</div>
       <div class="tile-n">conferido contra o Redmine</div>
     </div>
   </section>
 
   <div class="table-head">
     <h2>Projetos migrados</h2>
-    <div class="hint">Ordenado do mais recente para o mais antigo, por id do GLPI.</div>
+    <div class="filter">
+      <input id="q" type="search" placeholder="Filtrar por RDM, nome ou entidade…"
+             aria-label="Filtrar a tabela" autocomplete="off">
+      <button id="only-diff" type="button" aria-pressed="false">Só divergências</button>
+      <span id="count" class="hint"></span>
+    </div>
   </div>
 
   <div class="scroll">
@@ -422,7 +470,7 @@ PAGE = r'''<title>Migração Redmine → GLPI</title>
         </tr>
       </thead>
       <tbody>
-        {rows}
+        %%ROWS%%
       </tbody>
     </table>
   </div>
@@ -484,4 +532,39 @@ PAGE = r'''<title>Migração Redmine → GLPI</title>
   </footer>
 
 </div>
+
+<script>
+  (function () {
+    var box = document.getElementById("q");
+    var onlyDiff = document.getElementById("only-diff");
+    var count = document.getElementById("count");
+    var rows = Array.prototype.slice.call(
+      document.querySelectorAll("tbody tr")
+    );
+    var total = rows.length;
+
+    function apply() {
+      var needle = box.value.trim().toLowerCase();
+      var diffOnly = onlyDiff.getAttribute("aria-pressed") === "true";
+      var shown = 0;
+      rows.forEach(function (row) {
+        var matchesText = !needle || row.textContent.toLowerCase().indexOf(needle) !== -1;
+        var matchesDiff = !diffOnly || row.classList.contains("is-diverge");
+        var visible = matchesText && matchesDiff;
+        row.hidden = !visible;
+        if (visible) { shown += 1; }
+      });
+      count.textContent =
+        shown === total ? total + " projetos" : shown + " de " + total + " projetos";
+    }
+
+    box.addEventListener("input", apply);
+    onlyDiff.addEventListener("click", function () {
+      var on = onlyDiff.getAttribute("aria-pressed") === "true";
+      onlyDiff.setAttribute("aria-pressed", on ? "false" : "true");
+      apply();
+    });
+    apply();
+  })();
+</script>
 '''
