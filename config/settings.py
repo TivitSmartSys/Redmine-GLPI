@@ -390,6 +390,20 @@ SEARCH_FETCH_RANGE = "0-999"
 DEFAULT_DB_PATH = PROJECT_ROOT / "migration.db"
 HTTP_TIMEOUT_SECONDS = 60
 
+# Retentativas do DOWNLOAD de anexos do Redmine, e só dele.
+#
+# Medido em 2026-08-31, no lote HYDRO: RDM 19314 perdeu um anexo de 48 KB para
+# um RemoteDisconnected, e o mesmo arquivo baixou na primeira tentativa poucos
+# minutos depois. Uma queda em cerca de 550 downloads. Telecom tem trinta vezes
+# esse volume, então sem retentativa algumas dezenas de arquivos perfeitamente
+# bons iriam para a lista de envio manual porque a rede piscou.
+#
+# Vale SOMENTE para falha de conexão. Um status HTTP - 404 em especial - não é
+# repetido: significa que o Redmine não tem mais o arquivo em disco, que é dado
+# real (visto nos 77 anexos de RDM 1240), e repetir só deixa a execução lenta.
+DOWNLOAD_RETRY_ATTEMPTS = 3
+DOWNLOAD_RETRY_BACKOFF_SECONDS = (2, 5)
+
 # Range used when pulling a whole dropdown dictionary in one call (spec 6.3).
 DROPDOWN_FETCH_RANGE = "0-999"
 

@@ -800,6 +800,18 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
   perfectly well. The current behaviour is correct — attempt the upload, report
   the refusal as `FAILED_UPLOAD`, keep going.
 
+  **A dropped connection is retried since 2026-08-31; a 404 is not.**
+  `download_attachment` makes up to `DOWNLOAD_RETRY_ATTEMPTS` (3) attempts with
+  a growing pause, catching `requests.RequestException` only. The status-code
+  branch raises `RedmineError` and is deliberately outside that catch: a 404
+  means Redmine no longer has the file on disk — real data, seen on all 77 of
+  RDM 1240's attachments — and three attempts at a missing file buy nothing but
+  a slower run. Measured cause: the HYDRO batch lost RDM 19314's 48 KB
+  attachment to `RemoteDisconnected`, and the same file downloaded first try
+  minutes later; one drop in ~550 downloads, against Telecom's thirty-fold
+  volume. Verified live that a real download still succeeds through the new
+  path and that a 404 returns in 0.17 s, i.e. unretried.
+
   A large file has **two** independent failure points, and they look nothing
   alike. The same 33.5 MB attachment later failed on the Redmine side instead,
   with `RemoteDisconnected('Remote end closed connection without response')`
