@@ -51,6 +51,7 @@ from config.settings import (  # noqa: E402
     load_settings,
 )
 from report import messages  # noqa: E402
+from templates_status_page import PAGE as _PAGE  # noqa: E402
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -73,6 +74,9 @@ class Row:
     expected_tasks: int | None = None
     expected_notes: int | None = None
     expected_documents: int | None = None
+    # Tracker da issue raiz; preenchido só com --verify. Serve para dizer a
+    # qual projeto do Redmine esta raiz pertence, sem uma varredura extra.
+    tracker: int | None = None
 
     @property
     def traceable(self) -> bool:
@@ -186,10 +190,26 @@ def collect(
             documents=documents,
         )
 
-        if redmine is not None and tracked:
-            _fill_expected(row, redmine)
+        if redmine is not None:
+            # O tracker é lido SEMPRE que há Redmine, mesmo sem mapa local:
+            # ele diz a qual projeto do Redmine esta raiz pertence, e o painel
+            # conta o progresso por projeto. Ler só nas linhas rastreáveis
+            # subnotificava o progresso justamente nas linhas que já são as
+            # mais opacas - 5 de 5451 em vez de 7, no primeiro teste.
+            _fill_tracker(row, redmine)
+            if tracked:
+                _fill_expected(row, redmine)
         out.append(row)
     return out
+
+
+def _fill_tracker(row: Row, redmine: RedmineClient) -> None:
+    """A qual tracker (logo, a qual projeto do Redmine) esta raiz pertence."""
+    try:
+        issue = redmine.fetch_issue(row.redmine_id, include=())
+    except ApiError:
+        return
+    row.tracker = (issue.get("tracker") or {}).get("id")
 
 
 def _fill_expected(row: Row, redmine: RedmineClient) -> None:
@@ -301,6 +321,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--out", default=None, help="Grava a tabela neste arquivo .md.")
     parser.add_argument(
+        "--html",
+        default=None,
+        help="Grava o painel HTML neste arquivo (para publicar como página).",
+    )
+    parser.add_argument(
         "--verify",
         action="store_true",
         help="Confere cada árvore contra o Redmine. Lento: um GET por projeto.",
@@ -348,6 +373,12 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         conn.close()
 
+    if args.html:
+        path = Path(args.html)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(render_html(rows, progress_totals(rows)), encoding="utf-8")
+        print(f"Painel salvo em {path} ({len(rows)} projetos).")
+
     text = render(rows, verified=args.verify)
     if args.out:
         path = Path(args.out)
@@ -357,6 +388,119 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(text)
     return EXIT_OK
+
+
+
+
+# -- painel HTML -----------------------------------------------------------
+#
+# A mesma tabela, como página publicável. Fica aqui e não num template solto
+# para que a página nunca fique defasada em relação aos números: uma execução
+# gera as duas saídas a partir da mesma leitura.
+
+# Total de raízes em escopo por projeto do Redmine, medido em 2026-08-31.
+# O Redmine é um sistema vivo e cresce: hydro foi de 170 para 171 em dois dias.
+# Reconfira com `batch.selection.candidate_roots` antes de citar estes números
+# fora daqui.
+SCOPE_ROOTS = {
+    "operacao-cemig": ("tracker 39", 6),
+    "hydro": ("tracker 42", 171),
+    "projetos-telecom": ("tracker 14", 5451),
+}
+
+
+def progress_totals(rows: list[Row]) -> dict:
+    """Números do cabeçalho do painel, derivados das linhas lidas."""
+    return {
+        "projects": len(rows),
+        "tasks": sum(r.tasks or 0 for r in rows),
+        "notes": sum(r.notes for r in rows),
+        "documents": sum(r.documents for r in rows),
+        "diverging": sum(1 for r in rows if r.verified and not r.matches),
+        "untracked": sum(1 for r in rows if not r.traceable),
+        "scope": sum(n for _, n in SCOPE_ROOTS.values()),
+    }
+
+
+def _esc(text: str) -> str:
+    return (
+        str(text)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+    )
+
+
+def _html_cell(actual: int | None, expected: int | None) -> str:
+    if actual is None:
+        return '<td class="num qmark">?</td>'
+    if expected is None or actual == expected:
+        return f'<td class="num">{actual}</td>'
+    return f'<td class="num mismatch">{actual} / {expected}</td>'
+
+
+def render_html(rows: list[Row], totals: dict) -> str:
+    body = []
+    for r in rows:
+        if not r.traceable:
+            css, pill, label = "is-nomap", "nomap", "sem mapa"
+        elif r.verified and not r.matches:
+            css, pill, label = "is-diverge", "diverge", "DIVERGE"
+        elif r.verified:
+            css, pill, label = "is-ok", "ok", "OK"
+        else:
+            css, pill, label = "is-ok", "ok", "—"
+        entity = _esc(r.entity.split(" > ")[-1].upper() if " > " in r.entity else r.entity)
+        body.append(
+            f'<tr class="{css}">'
+            f'<td class="id stripe">{r.redmine_id}</td>'
+            f'<td class="num">{r.glpi_id}</td>'
+            f"{_html_cell(r.tasks, r.expected_tasks)}"
+            f"{_html_cell(r.notes, r.expected_notes)}"
+            f"{_html_cell(r.documents, r.expected_documents)}"
+            f'<td><span class="pill {pill}">{label}</span></td>'
+            f'<td class="ent">{entity}</td>'
+            f'<td class="when">{_esc(r.created[:16])}</td>'
+            f'<td class="name">{_esc(r.name[:70])}</td>'
+            "</tr>"
+        )
+
+    # Quantas raízes de cada projeto do Redmine já estão migradas. Vem do
+    # tracker da própria raiz, que --verify já leu - sem varredura extra.
+    by_tracker: dict[int, int] = {}
+    for r in rows:
+        if r.tracker is not None:
+            by_tracker[r.tracker] = by_tracker.get(r.tracker, 0) + 1
+
+    legend = []
+    for ident, (tracker_label, total) in SCOPE_ROOTS.items():
+        tracker_id = int(tracker_label.split()[-1])
+        n = by_tracker.get(tracker_id, 0)
+        tracker = tracker_label
+        legend.append(
+            '<div class="leg">'
+            f'<div class="leg-name"><span class="dot" style="background:var(--{"ok" if n>=total else "unknown"})"></span>'
+            f"{_esc(ident)} · {tracker}</div>"
+            f'<div class="leg-num">{n} / {total}</div></div>'
+        )
+
+    pct = totals["projects"] / totals["scope"] * 100 if totals["scope"] else 0
+    stamp = f"{datetime.now():%Y-%m-%d %H:%M:%S}"
+    return _PAGE.format(
+        stamp=stamp,
+        projects=totals["projects"],
+        scope=totals["scope"],
+        remaining=totals["scope"] - totals["projects"],
+        pct=f"{pct:.2f}",
+        tasks=totals["tasks"],
+        notes=totals["notes"],
+        documents=totals["documents"],
+        diverging=totals["diverging"],
+        untracked=totals["untracked"],
+        rows="\n        ".join(body),
+        legend="\n      ".join(legend),
+    )
 
 
 if __name__ == "__main__":
