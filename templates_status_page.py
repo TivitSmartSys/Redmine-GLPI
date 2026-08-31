@@ -429,38 +429,51 @@ PAGE = r'''<title>Migração Redmine → GLPI</title>
 
   <section class="notes">
     <div class="note warn">
-      <h3>A única divergência real: RDM 20280</h3>
+      <h3>Divergências têm três causas — nenhuma é perda silenciosa</h3>
       <p>
-        Faltam 2 notas e 1 arquivo em relação ao que o Redmine tem hoje. O projeto foi
-        migrado em 2026-08-12; a causa mais provável é uma falha de upload ou um anexo
-        que respondeu 404 naquele momento — os dois casos são reportados e não
-        interrompem a migração, por decisão.
+        <strong>Arquivo grande demais.</strong> O GLPI aceita 50 MB, mas o
+        <code>post_max_size</code> do PHP é menor e recusa depois. Medido em
+        2026-08-31: 11,3 MB passa, 16,9 MB não. Esses arquivos continuam no
+        Redmine e vão para a lista de envio manual.
       </p>
-      <p>Vale reprocessar antes de fechar o lote, não é urgente.</p>
+      <p>
+        <strong>Conexão caída no download.</strong> Um
+        <code>RemoteDisconnected</code> do Redmine derruba um arquivo que, numa
+        segunda tentativa, desce sem problema. Nada a ver com tamanho.
+      </p>
+      <p>
+        <strong>O Redmine andou depois da migração.</strong> Esta tabela compara
+        o Redmine <em>de agora</em> com o GLPI <em>de agora</em>, e o Redmine é
+        um sistema vivo. Uma nota escrita depois que o projeto foi migrado
+        aparece aqui como divergência sem que nada tenha falhado — foi o caso de
+        RDM 20586, cujo comentário entrou enquanto o lote rodava.
+      </p>
     </div>
 
     <div class="note grey">
       <h3>“Sem mapa” não quer dizer vazio</h3>
       <p>
         Este GLPI <strong>não lista <code>ProjectTask</code> por nenhuma rota</strong> —
-        a rota plana devolve zero para a instância inteira mesmo com tarefas existindo e
-        legíveis por id. A única fonte de “quais tarefas são deste projeto” é o
-        <code>migration_map</code> local, que é proteção contra queda, não autoridade.
+        a rota plana devolve zero para a instância inteira mesmo com tarefas
+        existindo e legíveis por id. A única fonte de “quais tarefas são deste
+        projeto” é o <code>migration_map</code> local, que é proteção contra
+        queda, não autoridade.
       </p>
       <p>
-        Para um projeto migrado antes do banco atual o mapa está vazio, e aí a contagem
-        certa é <strong>desconhecida</strong>, nunca zero. Relatar zero ali inventa uma
-        divergência — foi o que a primeira versão desta tabela fez com 1289 e 1290.
+        Para um projeto migrado antes do banco atual o mapa está vazio, e aí a
+        contagem certa é <strong>desconhecida</strong>, nunca zero. Relatar zero
+        ali inventa uma divergência.
       </p>
     </div>
 
     <div class="note">
       <h3>Datas de criação: dois grupos</h3>
       <p>
-        Os quatro projetos CEMIG de hoje carregam o <code>created_on</code> real do
-        Redmine, deslocado de UTC−3. Os migrados antes de 2026-08-27 — 1286 a 1296 —
-        carregam a data da própria migração, porque a função de data só entrou depois.
-        Decisão do responsável: ficam como estão.
+        Os projetos migrados a partir de 2026-08-27 carregam o
+        <code>created_on</code> real do Redmine, deslocado de UTC−3. Os
+        anteriores — 1286 a 1296 — carregam a data da própria migração, porque
+        a função de data só entrou depois. Decisão do responsável: ficam como
+        estão.
       </p>
     </div>
   </section>
