@@ -161,7 +161,7 @@ def collect(
     out: list[Row] = []
     for redmine_id, glpi_id in pairs:
         try:
-            row = _read_one(glpi, conn, redmine, redmine_id, glpi_id)
+            row = _read_one(glpi, conn, redmine, redmine_id, glpi_id, entities)
         except ApiError as exc:
             # Uma leitura perdida não pode custar a varredura inteira. Aconteceu
             # em 2026-08-31: um RemoteDisconnected do GLPI no meio de 684
@@ -183,6 +183,7 @@ def _read_one(
     redmine: RedmineClient | None,
     redmine_id: int,
     glpi_id: int,
+    entities: dict[int, str],
 ) -> Row | None:
     """Uma linha da tabela. Levanta ApiError se o GLPI não responder."""
     project = glpi.get_item("Project", glpi_id)
