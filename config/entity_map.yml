@@ -105,9 +105,12 @@ entities:
     id_teste: 67
     clients: ["ALBRAS"]                # 68
 
+  # Created by the admin on production 2026-09-03 in answer to the preparation
+  # list; it did not exist before. id is 83 there, 109 on test - the one entry
+  # in this file whose id genuinely differs between the two instances.
   - completename: "TIVIT > HYDRO > BRASIL > HCO BELEM"
-    id_teste: 109
-    clients: ["HCO BELEM"]             # 2
+    id_teste: 83
+    clients: ["HCO BELEM"]             # 7 roots
 
   # -- Grupo Equatorial ----------------------------------------------------
   - completename: "TIVIT > GRUPO EQUATORIAL > BRASIL > CELG"
@@ -121,93 +124,44 @@ entities:
     id_teste: 71
     clients: ["EQUATORIAL SUL"]        # 19
 
-  # -- Cemig (trackers 39/40, out of scope - kept for completeness) ---------
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG D"
-    id_teste: 88
-    clients: ["CEMIG D"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG G CAMARCOS"
-    id_teste: 89
-    clients: ["CEMIG G CAMARCOS"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG G ITUTINGA"
-    id_teste: 90
-    clients: ["CEMIG G ITUTINGA"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG G LESTE"
-    id_teste: 91
-    clients: ["CEMIG G LESTE"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG G OESTE"
-    id_teste: 92
-    clients: ["CEMIG G OESTE"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG G POÇO FUNDO"
-    id_teste: 93
-    clients: ["CEMIG G POÇO FUNDO"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG G SUL"
-    id_teste: 94
-    clients: ["CEMIG G SUL"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG GT"
-    id_teste: 95
-    clients: ["CEMIG GT"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG PCH"
-    id_teste: 96
-    clients: ["CEMIG PCH"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG SIM"
-    id_teste: 97
-    clients: ["CEMIG SIM"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG TRADING"
-    id_teste: 98
-    clients: ["CEMIG TRADING"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_CENTRAL EÓLICA PARAJURU"
-    id_teste: 99
-    clients: ["CEMIG_CENTRAL EÓLICA PARAJURU"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_CENTRAL EOLICA VOLTA DO RIO"
-    id_teste: 100
-    clients: ["CEMIG_CENTRAL EOLICA VOLTA DO RIO"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_COMPANHIA TRANSMISSÃO CENTROOESTE DE MINAS"
-    id_teste: 101
-    clients: ["CEMIG_COMPANHIA TRANSMISSÃO CENTROOESTE DE MINAS"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_EMPRESA DE SERVIÇOS DE COMERCIALIZAÇÃO DE ENERGIA ELÉTRICA"
-    id_teste: 102
-    clients: ["CEMIG_EMPRESA DE SERVIÇOS DE COMERCIALIZAÇÃO DE ENERGIA ELÉTRICA"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_HORIZONTES ENERGIA"
-    id_teste: 103
-    clients: ["CEMIG_HORIZONTES ENERGIA"]
-
-  # The sheet spells this with an underscore, the GLPI Cliente dropdown with a
-  # space ("CEMIG ROSAL ENERGIA"). Neither appears on a tracker-14/42 issue, so
-  # both are listed rather than one of them guessed away.
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_ROSAL ENERGIA"
-    id_teste: 104
-    clients: ["CEMIG_ROSAL ENERGIA", "CEMIG ROSAL ENERGIA"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_SÁ CARVALHO"
-    id_teste: 105
-    clients: ["CEMIG_SÁ CARVALHO"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_SETE LAGOAS TRANSMISSORA DE ENERGIA"
-    id_teste: 106
-    clients: ["CEMIG_SETE LAGOAS TRANSMISSORA DE ENERGIA"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_UFV BOA ESPERANÇA"
-    id_teste: 107
-    clients: ["CEMIG_UFV BOA ESPERANÇA"]
-
-  - completename: "TIVIT > CEMIG > BRASIL > CEMIG_UFV TRÊS MARIAS"
-    id_teste: 108
-    clients: ["CEMIG_UFV TRÊS MARIAS"]
+  # -- Cemig ---------------------------------------------------------------
+  # COLLAPSED 2026-09-03, on the manager's written answer to the preparation
+  # list: "Observação: O que tiver de CEMIG vai para TIVIT > CEMIG > BRASIL >
+  # DISTRIBUICAO". Production stops the CEMIG tree at that level - none of the
+  # 21 leaf entities the spreadsheet named exists there, and the two the data
+  # actually uses (CEMIG D, 4 roots; CEMIG GT, 2 roots) were explicitly routed
+  # here rather than created. Verified live the same day: id 18,
+  # "TIVIT > CEMIG > BRASIL > DISTRIBUICAO".
+  #
+  # The 19 other client names are kept on this one entry. They cost nothing,
+  # they carry the same instruction, and dropping them would silently send a
+  # future CEMIG value to DEFAULT_ENTITY_ID instead.
+  - completename: "TIVIT > CEMIG > BRASIL > DISTRIBUICAO"
+    id_teste: 18
+    clients:
+      - "CEMIG D"                      # 4 roots (tracker 39)
+      - "CEMIG GT"                     # 2 roots (tracker 39)
+      - "CEMIG G CAMARCOS"
+      - "CEMIG G ITUTINGA"
+      - "CEMIG G LESTE"
+      - "CEMIG G OESTE"
+      - "CEMIG G POÇO FUNDO"
+      - "CEMIG G SUL"
+      - "CEMIG PCH"
+      - "CEMIG SIM"
+      - "CEMIG TRADING"
+      - "CEMIG_CENTRAL EÓLICA PARAJURU"
+      - "CEMIG_CENTRAL EOLICA VOLTA DO RIO"
+      - "CEMIG_COMPANHIA TRANSMISSÃO CENTROOESTE DE MINAS"
+      - "CEMIG_EMPRESA DE SERVIÇOS DE COMERCIALIZAÇÃO DE ENERGIA ELÉTRICA"
+      - "CEMIG_HORIZONTES ENERGIA"
+      # underscore in the sheet, space in the GLPI dropdown - both kept.
+      - "CEMIG_ROSAL ENERGIA"
+      - "CEMIG ROSAL ENERGIA"
+      - "CEMIG_SÁ CARVALHO"
+      - "CEMIG_SETE LAGOAS TRANSMISSORA DE ENERGIA"
+      - "CEMIG_UFV BOA ESPERANÇA"
+      - "CEMIG_UFV TRÊS MARIAS"
 
 # Clients the sheet marks "Nao sera migrado" - deliberately no entity. The
 # project is still migrated, into DEFAULT_ENTITY_ID, and the report says the

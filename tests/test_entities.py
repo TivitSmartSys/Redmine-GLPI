@@ -242,7 +242,12 @@ def test_shipped_map_has_no_duplicate_client():
 
 def test_shipped_map_covers_the_clients_the_sheet_defines():
     raw = load_entity_map()
-    assert len(raw["entities"]) == 37
+    # 17 since 2026-09-03, not the sheet's 37. Production stops the CEMIG tree
+    # at "TIVIT > CEMIG > BRASIL > DISTRIBUICAO" and the manager routed every
+    # CEMIG client there, so the sheet's 21 leaf entities collapsed into one.
+    # What must NOT change is the client count: the names are the key, and
+    # losing one sends its projects to DEFAULT_ENTITY_ID in silence.
+    assert len(raw["entities"]) == 17
     mapped_clients = sum(len(e["clients"]) for e in raw["entities"])
     # 43 names from the sheet plus one spelling variant of CEMIG_ROSAL ENERGIA
     # that only the GLPI dropdown uses.

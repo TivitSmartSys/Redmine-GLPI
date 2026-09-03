@@ -20,8 +20,17 @@ PROJECT_ROOT = CONFIG_DIR.parent
 # GLPI plugin containers (verified via API, spec sections 6.1 and 6.5)
 # ---------------------------------------------------------------------------
 
-# Container 15 - "camposadicionaisprojetos", type "dom", one row per Project.
-CONTAINER_ID_ADDITIONAL_FIELDS = 15
+# Container 17 - "camposadicionaisprojeto", type "dom", one row per Project.
+#
+# CHANGED 2026-09-03, when .env moved to the PRODUCTION instance
+# (smartsystemsitsm). The TEST instance numbered this container 15; production
+# numbers it 17, and its own id 15 is "adicionaltarefamp" (ProjectTask) while 16
+# is "adicionalsolucao" (ITILSolution) - both unrelated, so the old constants
+# read real rows of the wrong container rather than failing loudly.
+# Re-measured live 2026-09-03: 22 fields, every one is_active 1 and mandatory 0.
+# The itemtype string is unchanged, because it is built from the container NAME,
+# which happens to match; GLPI resolves it case-insensitively either way.
+CONTAINER_ID_ADDITIONAL_FIELDS = 17
 ITEMTYPE_ADDITIONAL_FIELDS = "PluginFieldsProjectcamposadicionaisprojeto"
 
 # Container 26 - "faturamento", type "tab", attached to ProjectTask.
@@ -34,8 +43,13 @@ ITEMTYPE_ADDITIONAL_FIELDS = "PluginFieldsProjectcamposadicionaisprojeto"
 # Container 26 uses its own column spelling (the "...fieldtwo" suffix), so the
 # two containers are NOT interchangeable; see the container26 section of
 # mapping.yml.
-CONTAINER_ID_FATURAMENTO = 26
-ITEMTYPE_FATURAMENTO = "PluginFieldsProjecttaskfaturamento"
+# CHANGED 2026-09-03 for production: the container is id 18 "abadefaturamento",
+# so the itemtype changes with the name. Both spellings of the trailing segment
+# answer over REST (verified live the same day), the lower-case form is kept for
+# consistency with the project container above. On TEST this was container 26,
+# "faturamento". 16 fields, all is_active 1 and mandatory 0.
+CONTAINER_ID_FATURAMENTO = 18
+ITEMTYPE_FATURAMENTO = "PluginFieldsProjecttaskabadefaturamento"
 
 # Container 16 - "camposadicionaistarefasdeprojeto", type "dom", on ProjectTask.
 # Deliberately NOT written in this version (closed decision 2026-08-06): of its
@@ -44,6 +58,10 @@ ITEMTYPE_FATURAMENTO = "PluginFieldsProjecttaskfaturamento"
 # be skipped anyway. Recorded here because it is a "dom" container: the moment
 # any of its fields is flagged mandatory, POST /ProjectTask starts failing the
 # same way POST /Project did, and the fix is the one in main.project_create_payload.
+# On PRODUCTION there is no counterpart worth naming: id 15 "adicionaltarefamp"
+# is the only "dom" container on ProjectTask and it belongs to a different
+# workflow (manutenção preventiva). Left at the test value because nothing reads
+# this constant - it is documentation of a container we deliberately never write.
 CONTAINER_ID_TASK_ADDITIONAL_FIELDS = 16
 
 # ---------------------------------------------------------------------------
@@ -177,7 +195,9 @@ TRACKER_TO_PROJECTTASKTYPE = {
 # ---------------------------------------------------------------------------
 MANDATORY_CONTAINER15_COLUMNS = (
     "valordoprojetofield",
-    "responsvelclientefieldtwo",
+    # PRODUCTION spelling, 2026-09-03: the project container's field is
+    # `responsvelclientefield`; the `two` suffix belongs to the test instance.
+    "responsvelclientefield",
     "plugin_fields_gestofielddropdowns_id",
     "plugin_fields_despesafielddropdowns_id",
     "plugin_fields_complexidadefielddropdowns_id",
@@ -350,7 +370,11 @@ GLPI_RIGHT_CREATE = 4
 # GLPI ITSELF would reject, before the bytes are downloaded. Guessing lower
 # would start skipping files that upload perfectly well. The fix belongs in
 # php.ini (`post_max_size` and `upload_max_filesize`).
-DOCUMENT_MAX_SIZE_MB = 50
+# RE-MEASURED 2026-09-03 on PRODUCTION: getGlpiConfig answers
+# document_max_size = 10 (MB), not the 50 of the test instance - and NOT the 20
+# the admin reported as raised. Whatever was changed, the API still reads 10, so
+# any attachment over 10 MB is refused by GLPI itself before PHP ever sees it.
+DOCUMENT_MAX_SIZE_MB = 10
 DOCUMENT_MAX_SIZE_BYTES = DOCUMENT_MAX_SIZE_MB * 1024 * 1024
 
 # Deduplication marker for documents, written into Document.comment.
