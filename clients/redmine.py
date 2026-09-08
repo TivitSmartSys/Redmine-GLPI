@@ -9,6 +9,8 @@ rejects that mistake at startup.
 
 from __future__ import annotations
 
+import time
+
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -16,7 +18,11 @@ from typing import Iterable
 import requests
 
 from clients.errors import RedmineError
-from config.settings import HTTP_TIMEOUT_SECONDS
+from config.settings import (
+    DOWNLOAD_RETRY_ATTEMPTS,
+    DOWNLOAD_RETRY_BACKOFF_SECONDS,
+    HTTP_TIMEOUT_SECONDS,
+)
 from report import messages
 
 DEFAULT_INCLUDE = ("children", "attachments", "relations", "journals")
@@ -134,22 +140,41 @@ class RedmineClient:
             )
         return issue
 
-    def iter_issues(self, tracker_id: int, page_size: int = 100):
+    def iter_issues(
+        self,
+        tracker_id: int,
+        page_size: int = 100,
+        project_id: str | int | None = None,
+    ):
         """Yield every issue of a tracker, closed ones included.
 
         status_id=* is required - without it Redmine returns open issues only,
         which would understate the real set of dropdown values in use.
+
+        `project_id` is optional and scopes the query to one Redmine project.
+        Redmine accepts either the numeric id or the string identifier there.
+        It stays optional because audit_coverage.py deliberately sweeps a
+        tracker across the whole instance; batch/selection.py always passes it,
+        so --project means what it says instead of relying on the measured
+        accident that each root tracker lives in exactly one project.
+
+        Still a GET, like every other call on this client. The Redmine side is
+        read-only (manager's rule, 2026-08-27) and adding a query parameter
+        does not change that - see tests/test_readonly_redmine.py.
         """
         offset = 0
         while True:
+            params = {
+                "tracker_id": int(tracker_id),
+                "status_id": "*",
+                "limit": page_size,
+                "offset": offset,
+            }
+            if project_id is not None:
+                params["project_id"] = project_id
             payload = self._get(
                 "/issues.json",
-                params={
-                    "tracker_id": int(tracker_id),
-                    "status_id": "*",
-                    "limit": page_size,
-                    "offset": offset,
-                },
+                params=params,
             )
             issues = payload.get("issues") or []
             for issue in issues:
@@ -219,34 +244,55 @@ class RedmineClient:
         target = Path(dest_path)
         target.parent.mkdir(parents=True, exist_ok=True)
 
-        try:
-            with self._session.get(
-                content_url, stream=True, timeout=self._timeout
-            ) as response:
-                if response.status_code >= 400:
-                    raise RedmineError(
-                        messages.redact(
-                            messages.HTTP_ERROR.format(
-                                status=response.status_code,
-                                method="GET",
-                                path=content_url,
-                                detail=response.text[:200],
-                            )
+        last: Exception | None = None
+        for attempt in range(DOWNLOAD_RETRY_ATTEMPTS):
+            try:
+                return self._download_once(content_url, target)
+            except requests.RequestException as exc:
+                # Connection-level failure only. The status-code branch below
+                # raises RedmineError, which is deliberately NOT caught here:
+                # a 404 means the file is gone from Redmine's disk, and three
+                # attempts at a missing file buy nothing.
+                last = exc
+                if attempt + 1 < DOWNLOAD_RETRY_ATTEMPTS:
+                    time.sleep(
+                        DOWNLOAD_RETRY_BACKOFF_SECONDS[
+                            min(attempt, len(DOWNLOAD_RETRY_BACKOFF_SECONDS) - 1)
+                        ]
+                    )
+
+        raise RedmineError(
+            messages.redact(
+                messages.CONNECTION_ERROR.format(system="Redmine", detail=last)
+            )
+        ) from last
+
+    def _download_once(self, content_url: str, target: Path) -> int:
+        """One attempt.
+
+        Opens the destination with "wb", so a retry after a half-written file
+        replaces it instead of appending to it.
+        """
+        with self._session.get(
+            content_url, stream=True, timeout=self._timeout
+        ) as response:
+            if response.status_code >= 400:
+                raise RedmineError(
+                    messages.redact(
+                        messages.HTTP_ERROR.format(
+                            status=response.status_code,
+                            method="GET",
+                            path=content_url,
+                            detail=response.text[:200],
                         )
                     )
-                written = 0
-                with target.open("wb") as handle:
-                    for chunk in response.iter_content(chunk_size=_DOWNLOAD_CHUNK):
-                        if chunk:
-                            handle.write(chunk)
-                            written += len(chunk)
-        except requests.RequestException as exc:
-            raise RedmineError(
-                messages.redact(
-                    messages.CONNECTION_ERROR.format(system="Redmine", detail=exc)
                 )
-            ) from exc
-
+            written = 0
+            with target.open("wb") as handle:
+                for chunk in response.iter_content(chunk_size=_DOWNLOAD_CHUNK):
+                    if chunk:
+                        handle.write(chunk)
+                        written += len(chunk)
         return written
 
     def close(self) -> None:

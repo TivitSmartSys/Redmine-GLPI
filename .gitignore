@@ -226,3 +226,7 @@ Redeploy.docx
 ~WRL0003.tmp
 ~$deploy.docx
 ~$deploy.docx
+
+# Batch migration output: per-run reports and purge records.
+# Operational evidence, not source - keep it on disk, out of git.
+reports/

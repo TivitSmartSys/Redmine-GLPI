@@ -399,14 +399,53 @@ class GlpiClient:
         rows = self._search(itemtype, {"searchText[items_id]": str(int(items_id))})
         return [row for row in rows if str(row.get("items_id")) == str(int(items_id))]
 
+    def project_tasks(self, project_id: int) -> list[dict]:
+        """ProjectTask rows of one project, through the host sub-item route.
+
+        BEST EFFORT, and callers must treat it as such. Measured 2026-08-27: a
+        flat `GET /ProjectTask` answers 0 rows for this entire instance even
+        though task 14141 reads back normally by id. An empty answer here is
+        therefore NOT proof that the project has no tasks, only that this route
+        could not enumerate them.
+
+        `range` is mandatory for the same reason as in notepad_rows: without it
+        GLPI returns the first 15 rows only.
+        """
+        try:
+            payload = self._request(
+                "GET",
+                f"/Project/{int(project_id)}/ProjectTask",
+                params={"range": SEARCH_FETCH_RANGE},
+            )
+        except GlpiError as exc:
+            # A project with no tasks answers 400/404 in some versions.
+            if "ERROR_GLPI_SEARCH" in str(exc) or "404" in str(exc):
+                return []
+            raise
+        if isinstance(payload, list):
+            return [row for row in payload if isinstance(row, dict)]
+        return []
+
     def find_by_rdmfield(self, issue_id: int) -> list[dict]:
         """Deduplication lookup (spec 9.1).
 
         Exact-match filtering matters: searchText is a substring match, so
         rdmfield=2023 would otherwise also match the migrated issue 20238.
+
+        `full_range` is NOT optional, and this is the read where truncation
+        costs the most. Without an explicit `range` GLPI answers with the first
+        15 rows only (the trap measured 2026-08-10 on project 1277). Because
+        the match is a substring one, marker 1240 also matches 11240 and
+        12400-12409: on a container-15 table growing towards 5627 rows the
+        exact row can sit outside that 15-row window, check_already_migrated
+        returns None and the project is migrated a second time.
         """
         wanted = str(int(issue_id))
-        rows = self._search(ITEMTYPE_ADDITIONAL_FIELDS, {"searchText[rdmfield]": wanted})
+        rows = self._search(
+            ITEMTYPE_ADDITIONAL_FIELDS,
+            {"searchText[rdmfield]": wanted},
+            full_range=True,
+        )
         return [row for row in rows if str(row.get("rdmfield", "")).strip() == wanted]
 
     def _search(self, itemtype: str, params: dict, full_range: bool = False) -> list[dict]:
@@ -431,6 +470,42 @@ class GlpiClient:
         if isinstance(payload, list):
             return [row for row in payload if isinstance(row, dict)]
         return []
+
+    def iter_all_rows(self, itemtype: str, page_size: int = 200) -> list[dict]:
+        """Every row of an itemtype, following the pages to the end.
+
+        TRAP: `_search(full_range=True)` pins `range` to SEARCH_FETCH_RANGE
+        ("0-999"), which is a ceiling, not a page loop. GLPI held 930
+        container-15 rows on 2026-08-27 - close enough that one more import
+        would have truncated the read in silence. A truncated read here does not
+        raise; it makes the batch believe the rows past the cap were never
+        migrated, and migrate them a second time.
+        """
+        rows: list[dict] = []
+        start = 0
+        while True:
+            try:
+                page = self._request(
+                    "GET",
+                    f"/{itemtype}",
+                    params={"range": f"{start}-{start + page_size - 1}"},
+                )
+            except GlpiError as exc:
+                # Same convention as _search: GLPI answers 400/404 for an empty
+                # result set in some versions.
+                if "ERROR_GLPI_SEARCH" in str(exc) or "404" in str(exc):
+                    break
+                raise
+            if not isinstance(page, list) or not page:
+                break
+            rows.extend(page)
+            if len(page) < page_size:
+                break
+            # Advance by rows received, not requested: if GLPI ignores the
+            # range header and returns more than page_size rows, we must skip
+            # them on the next iteration to avoid an infinite loop of duplicates.
+            start += len(page)
+        return rows
 
     def get_item(self, itemtype: str, item_id: int) -> dict | None:
         """One item, or None when it no longer exists.

@@ -762,6 +762,57 @@ UI_CONFIRM_EXPIRED = (
 )
 
 UI_JOB_BUSY = "Já existe uma execução em andamento. Aguarde a conclusão."
+
+# -- purge_import.py (fase 0 da migração em lote) --------------------------
+
+CLI_HELP_PURGE = (
+    "Remove o import em lote de 2026-06-06 e os projetos de teste do GLPI. "
+    "Sem --apply apenas mostra o que seria removido."
+)
+CLI_HELP_PURGE_APPLY = "Executa a remoção. Exige confirmação."
+CLI_HELP_PURGE_YES = "Confirma sem perguntar (para pipelines)."
+CLI_HELP_PURGE_REPORT = "Caminho do arquivo de registro da limpeza."
+
+# Two headers, not one: the saved report is evidence of a destructive
+# operation, so it must say on its face whether it describes an intention
+# (dry-run) or an action that already happened (--apply). render_purge_report
+# selects between them on its `applied` flag - see CLAUDE.md's controller
+# ruling for 2026-08-27's Task 4.
+PURGE_HEADER_PLANNED = "LIMPEZA DO IMPORT DE 2026-06-06 — PLANEJADA (nada foi removido)"
+PURGE_HEADER_APPLIED = "LIMPEZA DO IMPORT DE 2026-06-06 — EXECUTADA"
+PURGE_TARGET_COUNT = "Projetos selecionados para remoção: {count}"
+PURGE_KEPT_COUNT = "Projetos preservados: {count}"
+PURGE_TARGET_LINE = "  {project_id:>6} | ent {entity:>3} | marcador {marker:<12} | {name}"
+PURGE_KEEP_VIOLATION = (
+    "ABORTADO: {detail}. Nenhum projeto foi removido. "
+    "Corrija a regra de seleção antes de tentar de novo."
+)
+PURGE_CONFIRM_PROMPT = (
+    "Isto remove {count} projetos do GLPI de forma DEFINITIVA (force_purge). "
+    "Digite 'sim' para continuar: "
+)
+PURGE_CANCELLED = "Limpeza cancelada. Nada foi removido."
+PURGE_NOTHING_TO_DO = "Nada a remover: o alvo está vazio."
+PURGE_ROW_DELETED = "  removido {itemtype} {row_id} (projeto {project_id})"
+PURGE_PROJECT_DELETED = "  removido Project {project_id}"
+PURGE_ITEM_FAILED = (
+    "  FALHA em {itemtype} {row_id} do projeto {project_id}: {detail}"
+)
+PURGE_SUMMARY = (
+    "Removidos {projects} projetos, {tasks} tarefas, {containers} linhas de "
+    "container, {notes} notas, {links} vínculos de documento. "
+    "Falhas: {failed}."
+)
+PURGE_VERIFY_OK = (
+    "Verificação: restam {projects} projetos e {containers} linhas de container 15, "
+    "todas pertencentes aos projetos preservados ({stray} órfãs)."
+)
+PURGE_VERIFY_FAILED = (
+    "Verificação FALHOU: restam {projects} projetos e {containers} linhas de "
+    "container 15, das quais {stray} não pertencem a nenhum projeto vivo. "
+    "Esperado {expected_projects} projetos e somente linhas preservadas."
+)
+PURGE_REPORT_SAVED = "Registro da limpeza salvo em {path}"
 UI_JOB_NOT_FOUND = "Execução não encontrada ou já expirada."
 UI_ISSUE_INVALID = "Informe um número de issue válido."
 UI_TRACKER_INVALID = "Informe um número de tracker válido."
@@ -837,3 +888,70 @@ UI_CONFIG_NEVER_WRITE = "Colunas nunca gravadas"
 
 UI_EMPTY = "(nenhum)"
 UI_UNEXPECTED_ERROR = "Erro inesperado: {detail}"
+
+# -- migrate_batch.py (fase 1) ---------------------------------------------
+
+BATCH_ITEM_START = "[{position}/{total}] RDM {issue_id}"
+BATCH_ITEM_ALREADY = "já migrado no GLPI (projeto {glpi_id})"
+BATCH_ITEM_FAILED = "  FALHA em RDM {issue_id}: {detail}"
+
+# -- batch/report.py (phase 1 summary) ----------------------------------------
+
+BATCH_SUMMARY_HEADER = "RESUMO DA MIGRAÇÃO EM LOTE — {label} (execução {run_id})"
+BATCH_SUMMARY_TOTAL = "Itens na fila: {total}"
+BATCH_SUMMARY_STATE = "  {state:<8}: {count}"
+BATCH_SUMMARY_FAILURES = "FALHAS ({count}) — cada uma com o motivo:"
+BATCH_SUMMARY_FAILURE_LINE = "  RDM {issue_id}: {detail}"
+BATCH_SUMMARY_NO_FAILURES = "Nenhuma falha."
+BATCH_SUMMARY_PURGE_HEADER = "REGISTRO DA LIMPEZA (FASE 0)"
+BATCH_SUMMARY_SAVED = "Resumo salvo em {path}"
+
+# -- migrate_batch.py CLI (phase 1) ----------------------------------------
+
+CLI_HELP_BATCH = (
+    "Migra em lote todos os projetos pendentes de um projeto do Redmine. "
+    "Sem --apply apenas planeja."
+)
+CLI_HELP_BATCH_PROJECT = "Identificador do projeto no Redmine."
+CLI_HELP_BATCH_LIMIT = "Migra no máximo N raízes nesta execução."
+CLI_HELP_BATCH_RESUME = "Retoma a execução informada, refazendo pendentes e falhas."
+CLI_HELP_BATCH_REPORTS = "Diretório dos relatórios (padrão: reports)."
+CLI_HELP_BATCH_PURGE_RECORD = "Registro da fase 0, incorporado ao resumo final."
+BATCH_QUEUE = "Fila: {count} raízes. Execução {run_id}."
+BATCH_NOTHING_TO_DO = "Nada pendente: todas as raízes já estão no GLPI."
+BATCH_CONFIRM_PROMPT = (
+    "Isto vai criar até {count} projetos no GLPI. Digite 'sim' para continuar: "
+)
+
+# -- fix wave 2026-08-27: batch abort, report failures, orphan container rows -
+
+# batch/runner.py - a dead GLPI session must end the run, not manufacture
+# thousands of identical "failures" that the ledger cannot tell from real ones.
+BATCH_ABORTED_CONSECUTIVE = (
+    "ABORTADO: {count} falhas consecutivas. A sessão do GLPI provavelmente "
+    "caiu — as tentativas seguintes seriam inúteis. Os itens restantes "
+    "continuam pendentes; retome com --resume {run_id}."
+)
+BATCH_REPORT_WRITE_FAILED = (
+    "  AVISO: RDM {issue_id} foi migrado, mas o relatório não pôde ser "
+    "gravado em {path}: {detail}"
+)
+
+# migrate_batch.py
+BATCH_PURGE_RECORD_UNREADABLE = (
+    "AVISO: o registro da fase 0 em {path} não pôde ser lido ({detail}). "
+    "O resumo segue sem ele."
+)
+BATCH_RUN_NOT_FOUND = (
+    "Execução '{run_id}' não existe no livro-razão ({db}). Verifique o "
+    "identificador; uma fila vazia não é o mesmo que uma execução concluída."
+)
+
+# purge_import.py - container-15 rows whose host project is already gone are
+# exactly the poison this phase removes, and were previously never selected.
+PURGE_ORPHAN_HEADER = (
+    "Linhas de container 15 órfãs (o projeto hospedeiro já não existe): {count}"
+)
+PURGE_ORPHAN_LINE = (
+    "  linhas {rows} | ex-projeto {project_id} | marcador {marker}"
+)
