@@ -145,8 +145,15 @@ container15:
     transform: date
     sources: [{from: custom_field, name: "Data de aprovação da proposta"}]
 
-  - column: andamentodoprojetofield
-    transform: text
+  # PRODUCTION, 2026-09-03. The old `andamentodoprojetofield` is a plugin `text`
+  # column, i.e. VARCHAR(255), and 92 issues overflow it (worst 2788 chars). The
+  # plugin cannot change a field's type after creation, so the admin created a
+  # SECOND field, `andamentodoprojetofieldtwo` (id 173, type textarea, backed by
+  # TEXT). `longtext` is `text` that is exempt from PLUGIN_TEXT_MAX_LENGTH - see
+  # transform/mapper.py. Writing the old field as well was rejected: it would
+  # store a truncated copy of the same value in a column nobody reads.
+  - column: andamentodoprojetofieldtwo
+    transform: longtext
     sources: [{from: custom_field, name: "Andamento do Projeto"}]
 
   # Brazilian number convention ("66.977,45"). GLPI column is text -> copy
@@ -156,7 +163,8 @@ container15:
     mandatory: true
     sources: [{from: custom_field, name: "Valor do Projeto"}]
 
-  - column: responsvelclientefieldtwo
+  # PRODUCTION spelling, 2026-09-03: no `two` suffix on this instance.
+  - column: responsvelclientefield
     transform: text
     mandatory: true
     sources: [{from: custom_field, name: "Responsável Cliente"}]
@@ -183,10 +191,12 @@ container15:
   # To be registered in GLPI by hand before production (70 fills), spelled as
   # Redmine has them - matching is case-insensitive after .strip():
   #     CGTF (48), NEOENERGIA (8), COSERN (8), ENEVA/MPX (5), ENPECEL (1)
-  - column: plugin_fields_clientefielddropdowns_id
-    transform: dropdown
-    itemtype: PluginFieldsClientefielddropdown
-    sources: [{from: custom_field, name: "Cliente"}]
+  # REMOVED 2026-09-03 - see never_write.cliente below. Production has no
+  # `clientefield` at all and no PluginFieldsClientefielddropdown table; the
+  # manager's answer to the preparation list closed it: "não haverá campo
+  # cliente, o antigo campo cliente do REDMINE será substituído pelas entidades
+  # do GLPI". Cliente now reaches GLPI only as the project's entity, via
+  # config/entity_map.yml.
 
   - column: plugin_fields_tipodoprojetofielddropdowns_id
     transform: dropdown
@@ -270,26 +280,33 @@ container15:
 # written (check row id 2 / RDM 20389 by hand). The name is correct here.
 # ---------------------------------------------------------------------------
 container26:
+  # PRODUCTION, 2026-09-03: this is plugin container 18 "abadefaturamento" and
+  # its columns carry NO `two` suffix - the suffix belongs to the test instance's
+  # container 26. All 16 fields were re-read live; the two textarea columns
+  # (descriofield, observaefield) use `longtext`. `nconformidadefield` exists
+  # here and stays unmapped for the reason it always did: no confirmed source.
+  #
   # The `mandatory: true` flags that used to sit on four entries here were
   # removed on 2026-08-07: a sweep of GET /PluginFieldsField found mandatory=0
   # on every field of container 26. See MANDATORY_CONTAINER26_COLUMNS in
   # config/settings.py, now empty.
-  - column: ttulofieldtwo
+  - column: ttulofield
     transform: text
     sources: [{from: attribute, name: subject}]
 
-  - column: descriofieldtwo
-    transform: text
+  # textarea on production (TEXT, not VARCHAR(255)) -> longtext, never cut.
+  - column: descriofield
+    transform: longtext
     sources: [{from: attribute, name: description}]
 
-  - column: nnffieldtwo
+  - column: nnffield
     transform: text
     sources: [{from: custom_field, name: "No. NF"}]
 
   # US number convention (" 5593.40" - note the leading space). Copy verbatim,
   # strip() only. The paired project field uses the Brazilian convention;
   # normalising either one would desync project and invoice values.
-  - column: valortotaldanffieldtwo
+  - column: valortotaldanffield
     transform: text
     sources: [{from: custom_field, name: "Valor Total da NF"}]
 
@@ -311,36 +328,37 @@ container26:
     itemtype: PluginFieldsPrioridadefielddropdown
     sources: [{from: attribute, name: priority.name}]
 
-  - column: npedidoclientefieldtwo
+  - column: npedidoclientefield
     transform: text
     sources: [{from: custom_field, name: "No. Pedido Cliente"}]
 
-  - column: conformidadefieldtwo
+  - column: conformidadefield
     transform: yesno
     sources: [{from: custom_field, name: "Conformidade"}]
 
-  - column: competnciafieldtwo
+  - column: competnciafield
     transform: text
     sources: [{from: custom_field, name: "Competência"}]
 
-  - column: emissodanffieldtwo
+  - column: emissodanffield
     transform: date
     sources: [{from: custom_field, name: "Emissão da NF"}]
 
-  - column: projeodefaturamentofieldtwo
+  - column: projeodefaturamentofield
     transform: date
     sources: [{from: custom_field, name: "Projeção de Faturamento"}]
 
-  - column: vencimentofieldtwo
+  - column: vencimentofield
     transform: date
     sources: [{from: custom_field, name: "Vencimento"}]
 
-  - column: parcelaprojnanffieldtwo
+  - column: parcelaprojnanffield
     transform: text
     sources: [{from: custom_field, name: "Parcela Proj na NF"}]
 
-  - column: observaefieldtwo
-    transform: text
+  # textarea on production -> longtext, never cut.
+  - column: observaefield
+    transform: longtext
     sources: [{from: custom_field, name: "Observações"}]
 
   # statusfaturamentofield is NOT mapped - see never_write below. Its source
@@ -434,8 +452,14 @@ never_write:
   - column: plugin_fields_statusfaturamentofielddropdowns_id
     reason: redundant
   # Deliberate product decisions
-  # Cliente used to sit here ("set by hand after migration"). Its dictionary is
-  # populated as of 2026-08-03, so it is now mapped in container15 above.
+  # Cliente: NOT a column on production at all (no clientefield, no
+  # PluginFieldsClientefielddropdown). It is deliberately absent from this list
+  # too - never_write records live on plan.never_write, which all_records()
+  # excludes, and Cliente must stay inside the section-7 arithmetic. With no
+  # mapping entry consuming it, the Mapper's sweep over unconsumed source custom
+  # fields reports it as NO_COUNTERPART on every project, which is the honest
+  # outcome: the value reaches GLPI as the project's ENTITY (entity_map.yml) and
+  # nowhere else. Closed 2026-09-03 on the manager's written answer.
   #
   # Priority is dropped globally for projects and tasks. The ONE exception is
   # container 26's plugin_fields_prioridadefielddropdowns_id, which GLPI flags

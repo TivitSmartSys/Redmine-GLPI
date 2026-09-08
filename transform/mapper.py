@@ -350,8 +350,12 @@ class Mapper:
             ),
             entity_status.STATUS_NOT_MIGRATED: (
                 Outcome.NO_COUNTERPART,
-                "cliente marcado “não será migrado” na planilha — entidade omitida "
-                "de propósito",
+                # Wording corrected 2026-09-03: the key is NOT omitted. It has
+                # been sent on every project since 2026-08-12 - preflight moves
+                # the session to the root entity, so an omitted entities_id
+                # would file the project in entity 0 rather than in 75.
+                "cliente marcado “não será migrado” na planilha — projeto criado "
+                "na entidade padrão",
             ),
             entity_status.STATUS_UNRESOLVED: (
                 Outcome.UNRESOLVED,
@@ -486,7 +490,14 @@ class Mapper:
     def _transform(
         self, entry: dict, transform: str, raw: str, label: str
     ) -> tuple[Any, Outcome, str]:
-        if transform == "text":
+        # `longtext` is `text` for every purpose except the VARCHAR(255) cut
+        # below, which tests for "text" by name. It exists because the Fields
+        # plugin cannot change a field's type after creation: on production the
+        # long columns are separate `textarea` fields (andamentodoprojetofieldtwo
+        # id 173, descriofield, observaefield), backed by TEXT. Deliberately its
+        # own transform rather than a flag on the entry - the same reasoning that
+        # keeps `datetime` separate from `date`: one name, one column behaviour.
+        if transform in ("text", "longtext"):
             return raw, Outcome.WRITTEN, ""
 
         if transform == "date":

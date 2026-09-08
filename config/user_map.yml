@@ -1,39 +1,102 @@
 # Redmine issue.assigned_to.id -> GLPI users_id
 # Spec section 8.
 #
-# Policy (closed decision): a user with no GLPI counterpart - including
-# powerbi/162 - and an issue with no assigned_to at all leave the field empty
-# and add a warning to the report. Never abort the migration for this reason.
+# REBUILT 2026-09-03 AGAINST PRODUCTION, by measurement, not transcription.
+# Every id below was resolved by reading GET /User on
+# smartsystemsitsm and matching the Redmine login exactly (casefold + strip)
+# against glpi_users.name. The previous file carried ids from the TEST
+# instance, where the same people are numbered differently: paulo.rocha was 768
+# there and is 717 here, rayssa.mota 769 -> 740, caroline.menezes 771 -> 305.
+# Keeping the old numbers would have assigned four projects' worth of work to
+# unrelated colleagues, silently - 768 and 769 are live accounts on production
+# too, belonging to eduardo.barboza and erick.gabi.
+#
+# The Redmine side was swept the same day across all seven in-scope trackers
+# (14, 42, 39, 18, 41, 15, 40 - 10 547 issues): 59 people appear as assignee.
+# The `# n issues` comments are that sweep and exist so an accidental rename
+# shows up as a change in the numbers.
+#
+# TWO ENTRIES ARE MATCHED BY PERSON, NOT BY LOGIN. Redmine's login has no
+# counterpart on production, but the account exists under a different one and
+# the full name settles it:
+#     teodoro.lima  -> 72  teodoro.oliveira  "TEODORO OLIVEIRA LIMA"
+#     henrique.sokal-> 278 henrique.hsokal   "HENRIQUE SOKAL"
+# Nothing else was matched this way. The remaining 28 were checked against
+# every account on the instance, by login and by first name + surname, and have
+# none - they are recorded below with `glpi_id: null` so the report names them
+# instead of leaving a silent gap.
+#
+# Policy (closed decision): a user with no GLPI counterpart - and an issue with
+# no assigned_to at all - leave the field empty and add a warning to the report.
+# Never abort the migration for this reason.
 #
 # To mark a Redmine user as deliberately unmapped, set glpi_id: null.
 
 users:
-  33:  {glpi_id: 13,   login: "alexandre.parra"}
-  178: {glpi_id: 269,  login: "ana.marreira"}
-  95:  {glpi_id: 102,  login: "ana.nsilveira"}
-  185: {glpi_id: 289,  login: "andre.mapurunga"}
-  190: {glpi_id: 771,  login: "caroline.menezes"}
-  173: {glpi_id: 127,  login: "cristiane.cortes"}
-  156: {glpi_id: 12,   login: "daniel.honorato"}
-  128: {glpi_id: 60,   login: "david.sales"}
-  195: {glpi_id: 68,   login: "desirene.costa"}
-  # Added 2026-08-19 with CEMIG entering scope: he is the assignee of three of
-  # the six tracker-39 projects (18729, 18721, 18713). GLPI id read live from
-  # search/User - the login matches exactly, and none of the ten other
-  # "gabriel.*" accounts does.
-  192: {glpi_id: 306,  login: "gabriel.figueiredo"}
-  84:  {glpi_id: 66,   login: "genna.lima"}
-  174: {glpi_id: 172,  login: "giullian.barbosa"}
-  94:  {glpi_id: 70,   login: "guilherme.coelho"}
-  183: {glpi_id: 110,  login: "gustavo.aires"}
-  15:  {glpi_id: 101,  login: "igor.lonnes"}
-  187: {glpi_id: 180,  login: "jeane.silva"}
-  189: {glpi_id: 293,  login: "katielle.oliveira"}
-  199: {glpi_id: 768,  login: "paulo.rocha"}
-  162: {glpi_id: null, login: "powerbi"}          # no GLPI counterpart - empty + warning
-  197: {glpi_id: 769,  login: "rayssa.mota"}
-  62:  {glpi_id: 9,    login: "rogerio.ramos"}
-  36:  {glpi_id: 31,   login: "sophia.ribeiro"}
-  80:  {glpi_id: 770,  login: "teodoro.lima"}
-  101: {glpi_id: 161,  login: "thyago.lima"}
-  166: {glpi_id: 98,   login: "vanessa.diniz"}
+  84: {glpi_id: 66, login: "genna.lima"}       # 2246 issues
+  49: {glpi_id: 278, login: "henrique.sokal"}  # 751 issues - login diferente: henrique.hsokal = HENRIQUE SOKAL (conta inativa)
+  166: {glpi_id: 98, login: "vanessa.diniz"}   # 720 issues
+  128: {glpi_id: 60, login: "david.sales"}     # 566 issues
+  80: {glpi_id: 72, login: "teodoro.lima"}     # 418 issues - login diferente: teodoro.oliveira = TEODORO OLIVEIRA LIMA
+  65: {glpi_id: 133, login: "rodrigo.paes"}    # 375 issues
+  95: {glpi_id: 102, login: "ana.nsilveira"}   # 357 issues
+  22: {glpi_id: 30, login: "nara.lopes"}       # 356 issues
+  101: {glpi_id: 161, login: "thyago.lima"}    # 301 issues
+  189: {glpi_id: 293, login: "katielle.oliveira"} # 301 issues
+  64: {glpi_id: 15, login: "rodolfo.lucena"}   # 226 issues - conta inativa no GLPI
+  15: {glpi_id: 101, login: "igor.lonnes"}     # 207 issues
+  186: {glpi_id: 290, login: "gabriela.linhares"} # 190 issues
+  98: {glpi_id: 100, login: "cladson.andrade"} # 157 issues
+  199: {glpi_id: 717, login: "paulo.rocha"}    # 135 issues
+  197: {glpi_id: 740, login: "rayssa.mota"}    # 113 issues
+  196: {glpi_id: 61, login: "jhonanthan.marques"} # 91 issues
+  74: {glpi_id: 69, login: "eduardo.borges"}   # 56 issues
+  195: {glpi_id: 68, login: "desirene.costa"}  # 55 issues
+  178: {glpi_id: 269, login: "ana.marreira"}   # 51 issues
+  185: {glpi_id: 289, login: "andre.mapurunga"} # 38 issues
+  173: {glpi_id: 127, login: "cristiane.cortes"} # 33 issues
+  45: {glpi_id: 62, login: "vitor.correa"}     # 28 issues
+  187: {glpi_id: 180, login: "jeane.silva"}    # 23 issues
+  190: {glpi_id: 305, login: "caroline.menezes"} # 20 issues
+  183: {glpi_id: 110, login: "gustavo.aires"}  # 11 issues
+  179: {glpi_id: 270, login: "rafael.nascimento"} # 8 issues
+  174: {glpi_id: 172, login: "giullian.barbosa"} # 3 issues
+  192: {glpi_id: 306, login: "gabriel.figueiredo"} # 3 issues
+  156: {glpi_id: 12, login: "daniel.honorato"} # 2 issues
+  33: {glpi_id: 13, login: "alexandre.parra"}  # 1 issues
+  36: {glpi_id: 31, login: "sophia.ribeiro"}   # nao aparece como responsavel no escopo
+  62: {glpi_id: 9, login: "rogerio.ramos"}     # nao aparece como responsavel no escopo
+  94: {glpi_id: 70, login: "guilherme.coelho"} # nao aparece como responsavel no escopo
+
+  # --- sem conta no GLPI de producao (verificado 2026-09-03) --------------
+  # Nenhuma destas pessoas existe na instancia, nem pelo login nem pelo nome
+  # completo. O campo fica vazio e o relatorio avisa, projeto por projeto.
+  50: {glpi_id: null, login: "geisilene.chaves"} # 386 issues
+  149: {glpi_id: null, login: "cleiton.marinho"} # 280 issues
+  68: {glpi_id: null, login: "yane.holanda"}   # 193 issues
+  85: {glpi_id: null, login: "antonio.albuquerque"} # 176 issues
+  96: {glpi_id: null, login: "aleff.arruda"}   # 173 issues
+  91: {glpi_id: null, login: "thaina.pereira"} # 142 issues
+  200: {glpi_id: null, login: "fabio.ioliveira"} # 128 issues
+  57: {glpi_id: null, login: "bruno.asantos"}  # 115 issues
+  75: {glpi_id: null, login: "cassio.freitas"} # 104 issues
+  67: {glpi_id: null, login: "monica.noroes"}  # 58 issues
+  47: {glpi_id: null, login: "crystenes.deus"} # 41 issues
+  90: {glpi_id: null, login: "francisco.alexandre"} # 36 issues
+  124: {glpi_id: null, login: "marco.lopes"}   # 36 issues
+  8: {glpi_id: null, login: "ricardo.porto"}   # 33 issues
+  97: {glpi_id: null, login: "julio.sasse"}    # 25 issues
+  43: {glpi_id: null, login: "rodolfo.lopes"}  # 22 issues
+  79: {glpi_id: null, login: "henrique.nakashato"} # 20 issues
+  177: {glpi_id: null, login: "diego.francis"} # 17 issues
+  63: {glpi_id: null, login: "lincoln.lessa"}  # 16 issues
+  27: {glpi_id: null, login: "khalil.soares"}  # 13 issues
+  28: {glpi_id: null, login: "silvan.gondim"}  # 9 issues
+  44: {glpi_id: null, login: "bernardo"}       # 4 issues
+  66: {glpi_id: null, login: "rodrigo.leonel"} # 4 issues
+  71: {glpi_id: null, login: "isaias.moraes"}  # 4 issues
+  46: {glpi_id: null, login: "edson.dias"}     # 1 issues
+  70: {glpi_id: null, login: "carlos.forte"}   # 1 issues
+  72: {glpi_id: null, login: "sergio.dias"}    # 1 issues
+  73: {glpi_id: null, login: "leoncio.sousa"}  # 1 issues
+  162: {glpi_id: null, login: "powerbi"}       # nao aparece como responsavel no escopo
