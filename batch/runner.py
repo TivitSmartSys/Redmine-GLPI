@@ -35,6 +35,31 @@ from store.db import MigrationStore
 MAX_CONSECUTIVE_FAILURES = 10
 
 
+def _notify(on_item, position: int, total: int, issue_id: int, state: str, detail: str) -> None:
+    """Feed the progress callback without ever letting it end a run.
+
+    Swallowing is not laziness here. The callback fires AFTER the ledger is
+    marked, i.e. after the item has been written to GLPI; letting it raise
+    would hand the exception to the broad `except` in the loop, which would
+    then record a committed migration as `failed` and hand it to --resume for
+    a second, duplicating attempt. A broken progress display is a display bug.
+    """
+    if on_item is None:
+        return
+    try:
+        on_item(
+            position=position, total=total, issue_id=issue_id,
+            state=state, detail=detail,
+        )
+    except Exception as exc:  # noqa: BLE001 - see above
+        print(
+            messages.BATCH_PROGRESS_CALLBACK_FAILED.format(
+                issue_id=issue_id, detail=messages.redact(exc)
+            ),
+            file=sys.stderr,
+        )
+
+
 def render_item_report(plan, apply_mode: bool) -> str:
     return Reporter(plan, apply_mode=apply_mode).render()
 
@@ -52,6 +77,7 @@ def run_batch(
     db_path: str = "migration.db",
     skip_attachments: bool = False,
     skip_notes: bool = False,
+    on_item=None,
 ) -> None:
     """Migrate each root in turn. A failure is recorded, never fatal.
 
@@ -60,6 +86,14 @@ def run_batch(
     how a dead GLPI session announces itself. Everything else - a missing
     entity, an oversized attachment, a 403 on one Redmine issue - belongs to its
     item and is written to the ledger.
+
+    `on_item(position=, total=, issue_id=, state=, detail=)` is an optional
+    progress feed for the web panel, called once per item right after the
+    ledger is marked. It is deliberately a callback rather than something the
+    caller parses out of stdout: the printed text is the report, and the report
+    is the primary functional requirement - a reworded message must never be
+    able to break a progress display. Every call is wrapped, because by the
+    time it fires the item is already committed to GLPI (see _notify).
     """
     report_dir = Path(report_dir)
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -75,10 +109,9 @@ def run_batch(
             try:
                 existing = check_already_migrated(glpi, issue_id)
                 if existing:
-                    ledger.mark(
-                        run_id, issue_id, STATE_SKIPPED,
-                        messages.BATCH_ITEM_ALREADY.format(glpi_id=existing),
-                    )
+                    detail = messages.BATCH_ITEM_ALREADY.format(glpi_id=existing)
+                    ledger.mark(run_id, issue_id, STATE_SKIPPED, detail)
+                    _notify(on_item, position, total, issue_id, STATE_SKIPPED, detail)
                     consecutive_failures = 0
                     continue
 
@@ -98,6 +131,7 @@ def run_batch(
                     file=sys.stderr,
                 )
                 ledger.mark(run_id, issue_id, STATE_FAILED, str(detail)[:500])
+                _notify(on_item, position, total, issue_id, STATE_FAILED, str(detail)[:500])
                 consecutive_failures += 1
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     # Stop the loop. Everything still queued keeps its `pending`
@@ -114,6 +148,7 @@ def run_batch(
 
             consecutive_failures = 0
             ledger.mark(run_id, issue_id, STATE_OK)
+            _notify(on_item, position, total, issue_id, STATE_OK, "")
 
             # The report file is written OUTSIDE the pipeline's try on purpose.
             # A disk-full mid-run would otherwise be caught by the broad except

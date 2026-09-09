@@ -59,7 +59,7 @@ while the host project is alive; a project in the trash counts as orphaned.
 
 Exit codes: `0` ok, `1` failed/aborted, `2` configuration error.
 
-There is a pytest suite (`python -m pytest tests -q`, 181 tests) covering the
+There is a pytest suite (`python -m pytest tests -q`, 258 tests) covering the
 confirm gate, the summary figures, the VARCHAR(255) truncation, the client→entity
 map, the CEMIG scope rules and the root-tracker guard, the creation-date shift,
 and the attachment and
@@ -403,6 +403,78 @@ mandatory flags therefore do **not** refuse the write; a missing value only
 leaves the row incomplete. Report section 5 keeps the two cases in separate
 blocks and must stay that way. If GLPI rejects a container-26 row, apply
 degrades: keep the task, report the values, do not abort.
+
+### The web panel — `serve.py`
+
+The same pipeline behind a browser, on localhost only. `web/jobs.py` runs one
+job at a time in a worker thread and streams its stdout to the page over SSE;
+the CLI's `input()` gate becomes an HTTP request releasing a
+`threading.Event`, blocked **inside** the open session so the plan the operator
+approved is the object that gets written.
+
+Both workers are transcriptions, not reimplementations: `_run_migration`
+follows `main.main()` and `_run_batch` follows `migrate_batch.main()`, in the
+same order, with the same single preflight. No migration logic lives under
+`web/`.
+
+Four views plus **Lote**, added 2026-09-08. Lote picks one Redmine project,
+optionally caps the queue, and runs the pending roots through `batch.runner`.
+Three things it does that the CLI does not need:
+
+- **Progress is a callback, not parsed text.** `run_batch` takes an optional
+  `on_item(position, total, issue_id, state, detail)`, called where the ledger
+  is already marked. Scraping stdout would make the report's wording
+  load-bearing for the UI. `_notify` swallows a raising callback: it fires
+  *after* the item is committed to GLPI, so letting it propagate would hand a
+  finished migration to the loop's broad `except` and record it as `failed` —
+  which `--resume` would then retry, duplicating it.
+- **The event log is bounded for a batch only.** `main.py` prints from 65
+  sites; 5451 roots is hundreds of thousands of events pinned for the run.
+  `_EventLog(max_log_events=…)` drops old `log` events and never structural
+  ones, so the progress table and its arithmetic survive. Indices stop being
+  list positions once trimming starts, which is why every read goes through
+  `bisect` — a reconnecting tab whose cursor points into a hole gets the oldest
+  retained event instead of an empty stream.
+- **Resume is driven from the ledger.** `BatchLedger.runs()` lists every run
+  with its state counts; `resume_batch` takes the project from `run_label()`,
+  never from the request, and an unknown run id is a 404 rather than an empty
+  queue that reads like success.
+
+**A finished run is addressed by its run id, never by its job id.** Fixed
+2026-09-08 after the report of a previous batch became unreachable on a page
+refresh. Nothing had been lost - the files were on disk the whole time - but the
+summary hung off `/api/jobs/<job id>/report`, and a job lives only in
+`JobManager._jobs`, in memory, pruned at `MAX_RETAINED_JOBS`. The durable
+identity is the **run id**, which names both a ledger row and a
+`reports/<run-id>/` directory. `/api/batch/runs/<run>/summary` and
+`.../items` are keyed on it, so a past run reopens after any refresh or
+restart; the runs table now renders **Ver relatório** unconditionally, because
+the row that led nowhere was precisely the fully successful run, whose
+`resumable` is 0.
+
+The summary route prefers the `resumo.txt` on disk - that is the record the run
+actually wrote - and regenerates from the ledger when the file is absent.
+Regeneration is exact rather than approximate: `render_summary` reads nothing
+but the ledger, the same source the original write used. `run_exists` stays the
+allow-list on both routes, so a `reports/` directory whose run id this ledger
+never issued is **not** served: the August 2026 CLI runs sit in the backup
+database and correctly answer 404.
+
+**The panel deliberately exposes no skip flags.** `--skip-attachments` and
+`--skip-notes` stay CLI-only, for both workers: they are debugging switches,
+and a checkbox on a 5451-item write run is one misclick from a silent partial
+migration. Files and notes are always migrated.
+
+Per-item reports land in `reports/<run-id>/RDM<id>.txt` and `resumo.txt` beside
+them — the same paths `migrate_batch.py` writes, so a run driven from the panel
+leaves the same record on disk as one driven from the CLI. The report route
+validates `run_id` against the ledger before it names a directory.
+
+The **Configuração** tab is read-only and shows, since the same date, the
+instance it is pointed at (hosts only), `entity_map.yml`, and the operational
+constants — the entity default, the UTC offset, the document ceiling and the
+255-character cut. Every one of those has moved at least once and none was
+visible anywhere in the panel.
 
 ### The reporting contract
 

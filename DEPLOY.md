@@ -131,6 +131,7 @@ the CLI at all.
 |---|---|---|
 | `migration.db` (repo root by default) | SQLite `migration_map` — idempotence cache + crash guard, and the source of the panel's **History** tab | Yes (see below) |
 | `report_<issue>_<timestamp>.txt` | written **into the current working directory** when `--report` is passed | Optional, but archive them |
+| `reports/<run-id>/` | per-item reports and `resumo.txt` from a batch run — written by `migrate_batch.py` **and by the panel's Lote view**, and read back by the panel's item-report links | Yes, if the links are to keep working |
 | `.env` | credentials | Yes, secret |
 | `config/*.yml` | `mapping.yml`, `status_map.yml`, `user_map.yml` — versioned, read at startup | Ships with the code |
 

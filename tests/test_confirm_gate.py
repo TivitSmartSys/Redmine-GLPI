@@ -108,3 +108,31 @@ def test_secrets_never_reach_the_event_stream():
     payloads = [str(event.data) for event in job.log._events]
     assert all("super-secret-token" not in payload for payload in payloads)
     assert "super-secret-token" not in job.report_text
+
+
+def test_the_batch_gate_waits_longer_but_still_lets_go(monkeypatch):
+    """A batch asks the operator to approve thousands of writes, not one.
+
+    The longer timeout is a separate constant, and it must still expire: a job
+    nobody confirms has to release the GLPI session either way.
+    """
+    job = Job(kind="batch", label="hydro", confirm_timeout=0.2)
+
+    assert job.wait_for_confirmation({"count": 170}) is False
+
+
+def test_the_timeout_is_read_when_a_job_is_built_not_when_the_class_is_defined():
+    """A default argument would bind the constant once, at import.
+
+    That is not a test artifact: it silently freezes the value, so changing the
+    module constant - which is the documented way to tune the gate - would have
+    no effect on any job.
+    """
+    import web.jobs as module
+
+    original = module.CONFIRM_TIMEOUT_SECONDS
+    try:
+        module.CONFIRM_TIMEOUT_SECONDS = 0.2
+        assert Job(kind="migration", label="1").wait_for_confirmation() is False
+    finally:
+        module.CONFIRM_TIMEOUT_SECONDS = original
