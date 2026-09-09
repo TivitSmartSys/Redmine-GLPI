@@ -222,6 +222,12 @@ PAGE = r'''<title>Migração Redmine → GLPI</title>
   .tile.flag .tile-v, .tile.flag .tile-k { color: var(--warn); }
   .tile.flag .tile-n { color: var(--warn); opacity: .85; }
 
+  /* O que existe na instância mas não pertence a esta migração. Cinza, não
+     vermelho: não é uma falha, é contexto que evita ler o painel como quebrado. */
+  .tile.grey { border-color: var(--unknown); background: var(--unknown-soft); }
+  .tile.grey .tile-v, .tile.grey .tile-k { color: var(--unknown); }
+  .tile.grey .tile-n { color: var(--unknown); opacity: .85; }
+
   /* ---- table ---- */
   .table-head {
     display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px;
@@ -403,8 +409,7 @@ PAGE = r'''<title>Migração Redmine → GLPI</title>
         <div class="progress-label">raízes migradas · faltam %%REMAINING%% · %%PCT%%%</div>
       </div>
       <div class="progress-label" style="text-align:right">
-        Fase 0 concluída: 1262 projetos do import de 2026-06-06 removidos,<br>
-        marcador <code style="font-family:var(--mono)">rdmfield</code> voltou a ser confiável
+        %%NOTE%%
       </div>
     </div>
 
@@ -414,7 +419,8 @@ PAGE = r'''<title>Migração Redmine → GLPI</title>
 
     <div class="legend">
       %%LEGEND%%
-    </section>
+    </div>
+  </section>
 
   <section class="tiles">
     <div class="tile">
@@ -441,6 +447,11 @@ PAGE = r'''<title>Migração Redmine → GLPI</title>
       <div class="tile-k">Divergem</div>
       <div class="tile-v">%%DIVERGING%%</div>
       <div class="tile-n">conferido contra o Redmine</div>
+    </div>
+    <div class="tile grey">
+      <div class="tile-k">Fora desta migração</div>
+      <div class="tile-v">%%IMPORTED%%</div>
+      <div class="tile-n">%%IMPORTED_NOTE%%</div>
     </div>
   </section>
 

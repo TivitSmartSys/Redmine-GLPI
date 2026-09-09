@@ -18,6 +18,7 @@ from urllib.parse import urlsplit
 
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
+import migration_status as status_tool
 from batch.selection import REDMINE_PROJECTS
 from clients.errors import ApiError
 from clients.glpi import GlpiClient
@@ -136,6 +137,62 @@ def _register_routes(app: Flask) -> None:
             return _error(messages.UI_TRACKER_INVALID)
         try:
             job = _jobs(app).start_audit(tracker)
+        except JobBusy as exc:
+            return _error(str(exc), status=409)
+        return jsonify({"job_id": job.id})
+
+    # -- progresso --------------------------------------------------------
+    #
+    # A aba lê do cache em disco, nunca do GLPI. Uma varredura de 684 projetos
+    # levou ~45 min em 2026-08-31; abrir uma aba não pode custar isso. Quem
+    # relê é o job de /api/status/refresh, e só quando o operador pede.
+
+    def _snapshot():
+        """A última leitura salva, ou None quando não há nenhuma legível.
+
+        Um cache truncado por uma varredura interrompida é um arquivo que
+        existe e não parseia. Ele vale o mesmo que a ausência - um estado
+        vazio explicando o que fazer - e nunca um 500.
+        """
+        try:
+            return status_tool.load_cache()
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+
+    @app.get("/api/status/page")
+    def status_page():
+        snapshot = _snapshot()
+        if snapshot is None:
+            return Response(_STATUS_EMPTY_PAGE, mimetype="text/html")
+        page = status_tool.render_html(snapshot.rows, snapshot.totals())
+        return Response(page, mimetype="text/html")
+
+    @app.get("/api/status/meta")
+    def status_meta():
+        snapshot = _snapshot()
+        if snapshot is None:
+            return jsonify(
+                {"saved_at": None, "projects": 0, "scope": 0, "remaining": 0,
+                 "imported": None, "verified": False}
+            )
+        totals = snapshot.totals()
+        return jsonify(
+            {
+                "saved_at": snapshot.saved_at,
+                "projects": totals["projects"],
+                "scope": totals["scope"],
+                "remaining": totals["scope"] - totals["projects"],
+                "imported": totals["imported"],
+                "measured": snapshot.scope is not None,
+                "verified": any(row.verified for row in snapshot.rows),
+            }
+        )
+
+    @app.post("/api/status/refresh")
+    def status_refresh():
+        body = request.get_json(silent=True) or {}
+        try:
+            job = _jobs(app).start_status(verify=bool(body.get("verify")))
         except JobBusy as exc:
             return _error(str(exc), status=409)
         return jsonify({"job_id": job.id})
@@ -435,6 +492,20 @@ def _register_routes(app: Flask) -> None:
                 "user_map": _safe_yaml("user_map.yml"),
             }
         )
+
+
+# O estado vazio mora dentro do mesmo iframe da página, então precisa ser uma
+# página inteira. Herda as cores do navegador em vez das do painel: são dois
+# documentos, e emparelhar temas aqui seria copiar o CSS de app.css para cá.
+_STATUS_EMPTY_PAGE = (
+    "<!doctype html><meta charset='utf-8'>"
+    "<style>body{margin:0;display:grid;place-items:center;min-height:100vh;"
+    "font:15px/1.6 ui-sans-serif,system-ui,'Segoe UI',sans-serif;"
+    "color:#64757F;background:#EDF0F2}"
+    "@media (prefers-color-scheme:dark){body{color:#8598A3;background:#0C1216}}"
+    "p{max-width:46ch;text-align:center;padding:0 24px}</style>"
+    f"<p>{messages.UI_STATUS_EMPTY}</p>"
+)
 
 
 def _host(url: str) -> str:

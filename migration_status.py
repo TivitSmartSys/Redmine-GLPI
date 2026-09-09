@@ -43,6 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from batch.selection import REDMINE_PROJECTS, candidate_roots  # noqa: E402
 from clients.errors import ApiError  # noqa: E402
 from clients.glpi import GlpiClient  # noqa: E402
 from clients.redmine import RedmineClient  # noqa: E402
@@ -347,11 +348,35 @@ def _cell(actual: int | None, expected: int | None) -> str:
 CACHE_PATH = Path("reports/status-cache.json")
 
 
-def save_cache(rows: list[Row]) -> None:
+@dataclass
+class Snapshot:
+    """Uma leitura completa: as linhas e o CONTEXTO em que foram lidas.
+
+    O contexto viaja junto de propósito. O painel do navegador abre a partir
+    do cache, e um denominador de uma medição e um numerador de outra somam
+    uma porcentagem que nunca existiu.
+    """
+
+    rows: list[Row]
+    saved_at: str
+    scope: dict[str, tuple[str, int]] | None = None
+    imported: int | None = None
+
+    def totals(self) -> dict:
+        return progress_totals(self.rows, scope=self.scope, imported=self.imported)
+
+
+def save_cache(
+    rows: list[Row],
+    scope: dict[str, tuple[str, int]] | None = None,
+    imported: int | None = None,
+) -> None:
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
     CACHE_PATH.write_text(
         json.dumps(
             {"saved_at": f"{datetime.now():%Y-%m-%d %H:%M:%S}",
+             "scope": {k: list(v) for k, v in (scope or {}).items()} or None,
+             "imported": imported,
              "rows": [vars(r) for r in rows]},
             ensure_ascii=False,
             indent=1,
@@ -360,9 +385,17 @@ def save_cache(rows: list[Row]) -> None:
     )
 
 
-def load_cache() -> list[Row]:
+def load_cache() -> Snapshot:
+    """A última leitura salva. Um cache anterior a esta versão não tem as
+    chaves novas, e a ausência delas significa "não medido", nunca zero."""
     payload = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
-    return [Row(**item) for item in payload["rows"]]
+    raw_scope = payload.get("scope") or None
+    return Snapshot(
+        rows=[Row(**item) for item in payload["rows"]],
+        saved_at=str(payload.get("saved_at") or "?"),
+        scope={k: (v[0], int(v[1])) for k, v in raw_scope.items()} if raw_scope else None,
+        imported=payload.get("imported"),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -434,23 +467,27 @@ def main(argv: list[str] | None = None) -> int:
         if not CACHE_PATH.exists():
             print(f"Sem leitura salva em {CACHE_PATH}.", file=sys.stderr)
             return EXIT_FAILED
-        rows = load_cache()
+        snapshot = load_cache()
+        rows = snapshot.rows
         print(f"Renderizando de {CACHE_PATH} ({len(rows)} projetos), sem ler o GLPI.")
-        _emit(args, rows, verified=any(r.verified for r in rows))
+        _emit(args, snapshot, verified=any(r.verified for r in rows))
         return EXIT_OK
 
     conn = sqlite3.connect(args.db)
     try:
         with GlpiClient(
             settings.glpi_url, settings.glpi_user_token, settings.glpi_app_token
-        ) as glpi:
-            if args.verify:
-                with RedmineClient(
-                    settings.redmine_url, settings.redmine_api_key
-                ) as redmine:
-                    rows = collect(glpi, conn, redmine, limit=args.limit)
-            else:
-                rows = collect(glpi, conn, limit=args.limit)
+        ) as glpi, RedmineClient(
+            settings.redmine_url, settings.redmine_api_key
+        ) as redmine:
+            rows = collect(glpi, conn, redmine if args.verify else None, limit=args.limit)
+            # O Redmine é aberto mesmo sem --verify, e só por causa do
+            # denominador: uma porcentagem sobre um total transcrito erra em
+            # silêncio e piora sozinha. Custa ~100 s; --verify continua sendo
+            # quem paga o caro, que é comparar árvore por árvore.
+            print("Medindo o escopo no Redmine (uma varredura por projeto)...")
+            scope = measure_scope(redmine)
+            imported = measure_imported(glpi, rows)
     except ApiError as exc:
         print(messages.redact(exc), file=sys.stderr)
         return EXIT_FAILED
@@ -467,16 +504,26 @@ def main(argv: list[str] | None = None) -> int:
         path.write_text(render_pending(pend), encoding='utf-8')
         print(f'Pendências salvas em {path} ({len(pend)} arquivo(s)).')
 
-    save_cache(rows)
-    _emit(args, rows, verified=args.verify)
+    save_cache(rows, scope, imported)
+    _emit(
+        args,
+        Snapshot(
+            rows=rows,
+            saved_at=f"{datetime.now():%Y-%m-%d %H:%M:%S}",
+            scope=scope,
+            imported=imported,
+        ),
+        verified=args.verify,
+    )
     return EXIT_OK
 
 
-def _emit(args, rows: list[Row], verified: bool) -> None:
+def _emit(args, snapshot: Snapshot, verified: bool) -> None:
+    rows = snapshot.rows
     if args.html:
         path = Path(args.html)
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(render_html(rows, progress_totals(rows)), encoding="utf-8")
+        path.write_text(render_html(rows, snapshot.totals()), encoding="utf-8")
         print(f"Painel salvo em {path} ({len(rows)} projetos).")
 
     text = render(rows, verified=verified)
@@ -497,19 +544,74 @@ def _emit(args, rows: list[Row], verified: bool) -> None:
 # para que a página nunca fique defasada em relação aos números: uma execução
 # gera as duas saídas a partir da mesma leitura.
 
-# Total de raízes em escopo por projeto do Redmine, medido em 2026-08-31.
-# O Redmine é um sistema vivo e cresce: hydro foi de 170 para 171 em dois dias.
-# Reconfira com `batch.selection.candidate_roots` antes de citar estes números
-# fora daqui.
+# ÚLTIMO RECURSO, medido em 2026-08-31 e já desatualizado: em 2026-09-09 os
+# números reais eram 6 / 183 / 5460. O denominador do painel vem de
+# `measure_scope()`, que lê o Redmine na hora; esta constante só responde
+# quando a medição não está disponível - um cache antigo, por exemplo.
 SCOPE_ROOTS = {
     "operacao-cemig": ("tracker 39", 6),
     "hydro": ("tracker 42", 171),
     "projetos-telecom": ("tracker 14", 5451),
 }
 
+# Nomes como "RDM 16950" - o import de 2026-06-06 batizou os projetos assim.
+# O número é obrigatório: "RDM" sozinho não identifica chamado nenhum.
+_RDM_IN_NAME = re.compile(r"\bRDM\s*\d+", re.IGNORECASE)
 
-def progress_totals(rows: list[Row]) -> dict:
-    """Números do cabeçalho do painel, derivados das linhas lidas."""
+
+def measure_scope(redmine) -> dict[str, tuple[str, int]]:
+    """Quantas raízes cada projeto do Redmine tem AGORA.
+
+    O Redmine é um sistema vivo. Entre 2026-08-31 e 2026-09-09 a HYDRO foi de
+    171 para 183 raízes e a Telecom de 5451 para 5460 - 21 raízes que um
+    denominador transcrito simplesmente não enxerga, e o erro só cresce. Custa
+    uma varredura de ~100 s (a Telecom são 55 páginas de 100 issues), contra
+    horas do resto da leitura; é barato pelo que compra.
+    """
+    medido: dict[str, tuple[str, int]] = {}
+    for ident, tracker in REDMINE_PROJECTS.items():
+        roots = candidate_roots(redmine, tracker, project_id=ident)
+        medido[ident] = (f"tracker {tracker}", len(roots))
+    # Menor primeiro: a legenda fica legível e a ordem não depende do dict.
+    return dict(sorted(medido.items(), key=lambda kv: kv[1][1]))
+
+
+def count_imported(projects: list[dict], marked_hosts: set[int]) -> int:
+    """Projetos com "RDM <n>" no nome que NÃO vieram desta migração.
+
+    Contar pelo nome sozinho superestima: assuntos reais do Redmine citam
+    outros chamados, e RDM 18557 - migrado por esta ferramenta - chama-se
+    "RDM 18291 - Cascavel | 3 instalações de rádio". O que separa os dois
+    conjuntos é o marcador, não o nome, então quem hospeda um marcador sai
+    da conta por construção.
+    """
+    return sum(
+        1
+        for project in projects
+        if int(project.get("id") or 0) not in marked_hosts
+        and _RDM_IN_NAME.search(str(project.get("name") or ""))
+    )
+
+
+def measure_imported(glpi: GlpiClient, rows: list[Row]) -> int:
+    """O mesmo número, lido da instância. Uma leitura paginada, ~1 s."""
+    projects = glpi.iter_all_rows("Project")
+    return count_imported(projects, {r.glpi_id for r in rows})
+
+
+def progress_totals(
+    rows: list[Row],
+    scope: dict[str, tuple[str, int]] | None = None,
+    imported: int | None = None,
+) -> dict:
+    """Números do cabeçalho do painel, derivados das linhas lidas.
+
+    `scope` é o que foi medido no Redmine nesta execução; sem ele a constante
+    ainda responde, para que a página funcione a partir de um cache antigo.
+    `imported` fica None quando não foi medido - e None imprime "?", nunca 0,
+    pela mesma razão que a coluna "sem mapa" existe.
+    """
+    scope_rows = scope if scope else SCOPE_ROOTS
     return {
         "projects": len(rows),
         "tasks": sum(r.tasks or 0 for r in rows),
@@ -517,7 +619,9 @@ def progress_totals(rows: list[Row]) -> dict:
         "documents": sum(r.documents for r in rows),
         "diverging": sum(1 for r in rows if r.verified and not r.matches),
         "untracked": sum(1 for r in rows if not r.traceable),
-        "scope": sum(n for _, n in SCOPE_ROOTS.values()),
+        "scope": sum(n for _, n in scope_rows.values()),
+        "scope_rows": scope_rows,
+        "imported": imported,
     }
 
 
@@ -573,7 +677,7 @@ def render_html(rows: list[Row], totals: dict) -> str:
             by_tracker[r.tracker] = by_tracker.get(r.tracker, 0) + 1
 
     legend = []
-    for ident, (tracker_label, total) in SCOPE_ROOTS.items():
+    for ident, (tracker_label, total) in totals.get("scope_rows", SCOPE_ROOTS).items():
         tracker_id = int(tracker_label.split()[-1])
         n = by_tracker.get(tracker_id, 0)
         tracker = tracker_label
@@ -584,8 +688,33 @@ def render_html(rows: list[Row], totals: dict) -> str:
             f'<div class="leg-num">{n} / {total}</div></div>'
         )
 
+    # Os projetos que esta migração NÃO criou. Na produção são 789 - o import
+    # de 2026-06-06, sem marcador nenhum. Quem abre o GLPI vê ~800 projetos com
+    # cara de RDM e o painel afirma 7; sem esta linha o painel parece quebrado,
+    # e é justamente aqui que ele promete clareza.
+    imported = totals.get("imported")
+    if imported is None:
+        imported_value = "?"
+        imported_note = "não medido nesta leitura"
+        imported_line = (
+            "Projetos alheios a esta migração: <strong>não medido</strong> nesta leitura."
+        )
+    else:
+        imported_value = str(imported)
+        imported_note = "import de 2026-06-06, sem marcador"
+        imported_line = (
+            f"A instância também contém <strong>{imported}</strong> projetos com "
+            '"RDM &lt;n&gt;" no nome que <strong>não</strong> vieram desta migração:<br>'
+            "são o import de 2026-06-06 e não têm marcador "
+            '<code style="font-family:var(--mono)">rdmfield</code>. '
+            "Não entram na contagem acima."
+        )
+
     pct = totals["projects"] / totals["scope"] * 100 if totals["scope"] else 0
     values = {
+        "IMPORTED": imported_value,
+        "IMPORTED_NOTE": imported_note,
+        "NOTE": imported_line,
         "STAMP": f"{datetime.now():%Y-%m-%d %H:%M:%S}",
         "PROJECTS": str(totals["projects"]),
         "SCOPE": str(totals["scope"]),
