@@ -248,3 +248,68 @@ def test_limit_and_skips_are_passed_through():
 
     assert args.limit == 50
     assert args.skip_attachments is True
+
+
+# -- the panel's progress feed ------------------------------------------------
+#
+# The web panel needs per-item progress WITHOUT parsing stdout. Parsing it would
+# make the report text - the primary functional requirement - load-bearing for
+# the UI, so a reworded message would silently break the progress table.
+
+
+def test_on_item_reports_every_outcome_in_order(monkeypatch, ledger, tmp_path):
+    patch_pipeline(monkeypatch, fails={2}, migrated={3})
+    run = ledger.start_run("t")
+    ledger.queue(run, [1, 2, 3])
+    seen = []
+
+    runner.run_batch(
+        None, None, {}, ledger, run, [1, 2, 3],
+        apply_mode=True, report_dir=tmp_path,
+        on_item=lambda **event: seen.append(event),
+    )
+
+    assert [event["issue_id"] for event in seen] == [1, 2, 3]
+    assert [event["state"] for event in seen] == [STATE_OK, STATE_FAILED, STATE_SKIPPED]
+    assert [event["position"] for event in seen] == [1, 2, 3]
+    assert {event["total"] for event in seen} == {3}
+    assert "falhou em 2" in seen[1]["detail"]
+
+
+def test_on_item_is_optional(monkeypatch, ledger, tmp_path):
+    """The CLI passes nothing and must behave exactly as before."""
+    patch_pipeline(monkeypatch)
+    run = ledger.start_run("t")
+    ledger.queue(run, [1])
+
+    runner.run_batch(
+        None, None, {}, ledger, run, [1],
+        apply_mode=True, report_dir=tmp_path,
+    )
+
+    assert ledger.counts(run)[STATE_OK] == 1
+
+
+def test_a_broken_progress_callback_never_costs_a_migration(
+    monkeypatch, ledger, tmp_path
+):
+    """The item is already written to GLPI by the time on_item fires.
+
+    A callback that raises must not turn a committed migration into a ledger
+    `failed`, which is what the runner's broad `except` would otherwise do.
+    """
+    patch_pipeline(monkeypatch)
+    run = ledger.start_run("t")
+    ledger.queue(run, [1, 2])
+
+    def explode(**event):
+        raise Boom("o painel caiu")
+
+    runner.run_batch(
+        None, None, {}, ledger, run, [1, 2],
+        apply_mode=True, report_dir=tmp_path,
+        on_item=explode,
+    )
+
+    assert ledger.counts(run)[STATE_OK] == 2
+    assert ledger.counts(run).get(STATE_FAILED, 0) == 0

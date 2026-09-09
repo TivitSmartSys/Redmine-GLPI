@@ -886,6 +886,94 @@ UI_CONFIG_STATUS_MAP = "Mapa de status (status_map.yml)"
 UI_CONFIG_USER_MAP = "Mapa de usuários (user_map.yml)"
 UI_CONFIG_NEVER_WRITE = "Colunas nunca gravadas"
 
+# The instance the panel is pointed at. Hosts only - Settings.secret_values()
+# covers the three tokens and nothing else, and after the move from TEST to
+# PRODUCTION on 2026-09-03 "which GLPI is this?" is the first question the tab
+# has to answer.
+UI_CONFIG_INSTANCE = "Instância conectada"
+UI_CONFIG_INSTANCE_INTRO = (
+    "Endereços em uso nesta execução. Os tokens nunca são exibidos."
+)
+UI_CONFIG_INSTANCE_GLPI = "GLPI"
+UI_CONFIG_INSTANCE_REDMINE = "Redmine"
+UI_CONFIG_ENTITY_MAP = "Mapa de entidades (entity_map.yml)"
+UI_CONFIG_ENTITY_MAP_INTRO = (
+    "O Cliente da issue define a entidade do projeto no GLPI. A chave é o "
+    "completename, resolvido no preflight; o 'ID teste' serve apenas de "
+    "conferência. Um Cliente fora deste mapa não é erro: o projeto vai para a "
+    "entidade padrão e o relatório diz por quê."
+)
+UI_CONFIG_ENTITY_MAP_ID_TESTE = "ID teste"
+UI_CONFIG_CONSTANTS = "Parâmetros operacionais"
+UI_CONFIG_BATCH_PROJECTS = "Projetos do Redmine (migração em lote)"
+UI_CONFIG_RELOAD = "Recarregar"
+UI_CONFIG_ERROR = "Não foi possível ler a configuração: {detail}"
+
+UI_NAV_BATCH = "Lote"
+UI_BATCH_INTRO = (
+    "Migra todas as raízes pendentes de um projeto do Redmine, uma a uma, pelo "
+    "mesmo caminho da migração individual — anexos e notas incluídos. Uma "
+    "falha é registrada e a execução continua."
+)
+UI_BATCH_PROJECT_LABEL = "Projeto do Redmine"
+UI_BATCH_PROJECT_INVALID = "Selecione um projeto do Redmine válido."
+UI_BATCH_LIMIT_LABEL = "Máximo de itens (opcional)"
+UI_BATCH_LIMIT_PLACEHOLDER = "todos"
+UI_BATCH_LIMIT_HINT = "Deixe vazio para processar toda a fila."
+UI_BATCH_LIMIT_INVALID = "O máximo de itens deve ser um número maior que zero."
+UI_BATCH_RUN = "Simular lote"
+UI_BATCH_RUN_APPLY = "Analisar e gravar lote"
+UI_BATCH_RUNS_HEADING = "Execuções anteriores"
+UI_BATCH_RUNS_INTRO = (
+    "Retomar reprocessa o que ficou pendente ou falhou. Itens já concluídos "
+    "não são refeitos."
+)
+UI_BATCH_OPEN = "Ver relatório"
+UI_BATCH_RESUME = "Retomar"
+UI_BATCH_RESUME_APPLY = "Retomar e gravar"
+UI_BATCH_NO_RUNS = "Nenhuma execução em lote registrada ainda."
+UI_BATCH_RUN_NOT_FOUND = (
+    "Execução '{run_id}' não existe no livro-razão. Uma fila vazia não é o "
+    "mesmo que uma execução concluída."
+)
+UI_BATCH_COL_RUN = "Execução"
+UI_BATCH_COL_PROJECT = "Projeto"
+UI_BATCH_COL_STARTED = "Início"
+UI_BATCH_COL_TOTAL = "Fila"
+UI_BATCH_COL_RESUMABLE = "A retomar"
+UI_BATCH_COL_ISSUE = "RDM"
+UI_BATCH_COL_STATE = "Situação"
+UI_BATCH_COL_DETAIL = "Motivo"
+UI_BATCH_COL_REPORT = "Relatório"
+UI_BATCH_PROGRESS = "{done} de {total}"
+UI_BATCH_QUEUE_FOUND = "Fila: {count} raiz(es) pendente(s). Execução {run_id}."
+UI_BATCH_QUEUE_EMPTY = "Nada pendente: todas as raízes já estão no GLPI."
+UI_BATCH_CONFIRM_BODY = (
+    "Isto vai criar até {count} projetos no GLPI, um por raiz da fila. Esta "
+    "versão não desfaz nem atualiza projetos já migrados."
+)
+UI_BATCH_NO_CONSOLE = (
+    "Esta execução não tem registro de console — ela é anterior a esse "
+    "recurso. Os relatórios por item e o resumo continuam disponíveis."
+)
+UI_BATCH_CONSOLE_DOWNLOAD = "Baixar console.txt"
+UI_BATCH_SUMMARY_HEADING = "Resumo da execução"
+# Shown when an older run is reopened from the list, so a finished run is never
+# confused with one that is still going.
+UI_BATCH_VIEWING = "Execução {run_id} — {label} (concluída)"
+UI_BATCH_SUMMARY_DOWNLOAD = "Baixar resumo.txt"
+UI_BATCH_ITEM_REPORT = "abrir"
+UI_BATCH_STATE_OK = "migrado"
+UI_BATCH_STATE_FAILED = "falhou"
+UI_BATCH_STATE_SKIPPED = "já existia"
+UI_BATCH_STATE_PENDING = "pendente"
+# The console is capped for a batch; the report files on disk are not. Said out
+# loud so a truncated console is never read as a truncated migration.
+UI_BATCH_LOG_TRUNCATED = (
+    "O console mostra apenas as linhas mais recentes. O registro completo de "
+    "cada item está em reports/<execução>/."
+)
+
 UI_EMPTY = "(nenhum)"
 UI_UNEXPECTED_ERROR = "Erro inesperado: {detail}"
 
@@ -935,6 +1023,27 @@ BATCH_ABORTED_CONSECUTIVE = (
 BATCH_REPORT_WRITE_FAILED = (
     "  AVISO: RDM {issue_id} foi migrado, mas o relatório não pôde ser "
     "gravado em {path}: {detail}"
+)
+
+# batch/runner.py - the panel's progress feed failed. The item itself is fine;
+# it was already written to GLPI before the callback ran.
+BATCH_PROGRESS_CALLBACK_FAILED = (
+    "  AVISO: RDM {issue_id} foi migrado, mas o painel não pôde ser "
+    "notificado: {detail}"
+)
+
+# web/jobs.py - the transcript could not be written. Bookkeeping, not the work:
+# the migration itself is unaffected, and this line still reaches the console.
+BATCH_CONSOLE_WRITE_FAILED = (
+    "AVISO: o registro da execucao nao pode ser gravado em {path}: {detail}. "
+    "A migracao continua; apenas o console deixa de ser salvo em disco."
+)
+
+# web/jobs.py - the run finished and is already in the ledger; only the copy
+# on disk failed. Said out loud so the operator knows where the record is not.
+BATCH_SUMMARY_WRITE_FAILED = (
+    "AVISO: a execução terminou, mas o resumo não pôde ser gravado em "
+    "{path}: {detail}. O resumo continua disponível no painel."
 )
 
 # migrate_batch.py

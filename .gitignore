@@ -150,6 +150,7 @@ activemq-data/
 # Redmine -> GLPI migration runtime output (contains migrated customer data)
 report_*.txt
 migration.db
+migration.db.*
 audit*.txt
 
 # Environments

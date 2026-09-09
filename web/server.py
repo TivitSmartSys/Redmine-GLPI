@@ -14,9 +14,11 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict
+from urllib.parse import urlsplit
 
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
 
+from batch.selection import REDMINE_PROJECTS
 from clients.errors import ApiError
 from clients.glpi import GlpiClient
 from clients.redmine import RedmineClient
@@ -32,7 +34,7 @@ UI_STRINGS = {
 }
 
 
-def create_app(db_path: str | None = None) -> Flask:
+def create_app(db_path: str | None = None, reports_dir: str | None = None) -> Flask:
     """Build the app. Raises ConfigError when .env is incomplete."""
     settings = load_settings()
     messages.register_secrets(settings.secret_values())
@@ -42,7 +44,12 @@ def create_app(db_path: str | None = None) -> Flask:
     app.config["SETTINGS"] = settings
     app.config["MAPPING"] = mapping
     app.config["DB_PATH"] = db_path or str(config.DEFAULT_DB_PATH)
-    app.config["JOBS"] = JobManager(settings, mapping, app.config["DB_PATH"])
+    # Same default as migrate_batch.py, so a run driven from the panel leaves
+    # its per-item reports exactly where a CLI run leaves them.
+    app.config["REPORTS_DIR"] = reports_dir or "reports"
+    app.config["JOBS"] = JobManager(
+        settings, mapping, app.config["DB_PATH"], app.config["REPORTS_DIR"]
+    )
     # SSE responses must not be buffered or the console stops being live.
     app.config["JSON_SORT_KEYS"] = False
 
@@ -68,7 +75,12 @@ def _register_routes(app: Flask) -> None:
 
     @app.get("/")
     def index():
-        return render_template("index.html", ui=UI_STRINGS)
+        # The project list is static configuration, so it is rendered into the
+        # page rather than fetched: one fewer request, and the selector cannot
+        # come up empty because a call failed.
+        return render_template(
+            "index.html", ui=UI_STRINGS, batch_projects=_batch_projects()
+        )
 
     # -- connection health -----------------------------------------------
 
@@ -127,6 +139,136 @@ def _register_routes(app: Flask) -> None:
         except JobBusy as exc:
             return _error(str(exc), status=409)
         return jsonify({"job_id": job.id})
+
+    # -- batch (fase 1) ---------------------------------------------------
+
+    @app.post("/api/batch")
+    def batch():
+        body = request.get_json(silent=True) or {}
+        project = str(body.get("project") or "")
+        if project not in REDMINE_PROJECTS:
+            return _error(messages.UI_BATCH_PROJECT_INVALID)
+
+        limit = body.get("limit")
+        if limit in (None, "", "todos"):
+            limit = None
+        else:
+            try:
+                limit = int(limit)
+            except (TypeError, ValueError):
+                return _error(messages.UI_BATCH_LIMIT_INVALID)
+            # 0 is rejected rather than treated as "all": pending_roots reads
+            # limit=0 as "none", so accepting it here would silently start a
+            # run that does nothing.
+            if limit <= 0:
+                return _error(messages.UI_BATCH_LIMIT_INVALID)
+
+        apply_mode = body.get("mode") == "apply"
+        try:
+            job = _jobs(app).start_batch(project, apply_mode, limit)
+        except JobBusy as exc:
+            return _error(str(exc), status=409)
+        return jsonify({"job_id": job.id, "mode": "apply" if apply_mode else "dry"})
+
+    @app.post("/api/batch/resume")
+    def batch_resume():
+        body = request.get_json(silent=True) or {}
+        run_id = str(body.get("run_id") or "")
+        # An unknown id yields an empty queue, which is indistinguishable from
+        # a finished run - the trap migrate_batch.py hit on 2026-08-27. Say so
+        # instead of starting a job that reports "nothing pending".
+        if not _jobs(app).run_exists(run_id):
+            return _error(
+                messages.UI_BATCH_RUN_NOT_FOUND.format(run_id=run_id), status=404
+            )
+
+        apply_mode = body.get("mode") == "apply"
+        try:
+            job = _jobs(app).resume_batch(run_id, apply_mode)
+        except JobBusy as exc:
+            return _error(str(exc), status=409)
+        return jsonify({"job_id": job.id, "mode": "apply" if apply_mode else "dry"})
+
+    @app.get("/api/batch/runs")
+    def batch_runs():
+        return jsonify(_jobs(app).runs())
+
+    @app.get("/api/batch/runs/<run_id>/summary")
+    def batch_run_summary(run_id: str):
+        """A past run's resumo.txt, reachable after any refresh or restart.
+
+        Keyed on the run id, which is durable in both places that matter - the
+        ledger and reports/<run-id>/ - unlike the job id, which dies with the
+        process.
+        """
+        jobs = _jobs(app)
+        if not jobs.run_exists(run_id):
+            return _error(
+                messages.UI_BATCH_RUN_NOT_FOUND.format(run_id=run_id), status=404
+            )
+        return Response(
+            messages.redact(jobs.run_summary(run_id)),
+            mimetype="text/plain",
+            headers={"Content-Disposition": f'inline; filename="resumo_{run_id}.txt"'},
+        )
+
+    @app.get("/api/batch/runs/<run_id>/console")
+    def batch_run_console(run_id: str):
+        """The run's printed transcript, as the operator watched it happen.
+
+        Distinct from resumo.txt (the counts) and from the per-item reports
+        (the plan): this is the narrative - the order roots were taken in, the
+        GLPI id each became, and every warning printed while applying.
+        """
+        jobs = _jobs(app)
+        if not jobs.run_exists(run_id):
+            return _error(
+                messages.UI_BATCH_RUN_NOT_FOUND.format(run_id=run_id), status=404
+            )
+        text = jobs.run_console(run_id)
+        if text is None:
+            # A run from before the transcript existed. Saying so beats
+            # inventing one.
+            return _error(messages.UI_BATCH_NO_CONSOLE, status=404)
+        return Response(
+            messages.redact(text),
+            mimetype="text/plain",
+            headers={"Content-Disposition": f'inline; filename="console_{run_id}.txt"'},
+        )
+
+    @app.get("/api/batch/runs/<run_id>/items")
+    def batch_run_items(run_id: str):
+        """The rows that rebuild the progress table for a finished run."""
+        jobs = _jobs(app)
+        if not jobs.run_exists(run_id):
+            return _error(
+                messages.UI_BATCH_RUN_NOT_FOUND.format(run_id=run_id), status=404
+            )
+        return jsonify(jobs.items(run_id))
+
+    @app.get("/api/batch/runs/<run_id>/reports/<int:issue_id>")
+    def batch_item_report(run_id: str, issue_id: int):
+        """One item's report, straight off disk.
+
+        `run_id` reaches the filesystem as a path segment, so the ledger is the
+        allow-list: an id it never issued names no directory. `issue_id` is an
+        int by the URL converter, so neither half of the path can be crafted.
+        """
+        jobs = _jobs(app)
+        if not jobs.run_exists(run_id):
+            return _error(
+                messages.UI_BATCH_RUN_NOT_FOUND.format(run_id=run_id), status=404
+            )
+        path = jobs.report_path(run_id, issue_id)
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            return _error(messages.UI_JOB_NOT_FOUND, status=404)
+        return Response(
+            messages.redact(text),
+            mimetype="text/plain",
+            headers={"Content-Disposition": f'inline; filename="{path.name}"'},
+        )
 
     @app.get("/api/jobs/<job_id>/stream")
     def stream(job_id: str):
@@ -199,7 +341,13 @@ def _register_routes(app: Flask) -> None:
         job = _jobs(app).get(job_id)
         if job is None or not job.report_text:
             return _error(messages.UI_JOB_NOT_FOUND, status=404)
-        filename = default_report_path(job.label).name
+        # A batch's report is the run summary, not a per-issue report, and it
+        # is the same text migrate_batch.py saves as resumo.txt.
+        filename = (
+            f"resumo_{job.run_id or job.label}.txt"
+            if job.kind == "batch"
+            else default_report_path(job.label).name
+        )
         return Response(
             job.report_text,
             mimetype="text/plain",  # Flask appends charset=utf-8 itself
@@ -219,8 +367,19 @@ def _register_routes(app: Flask) -> None:
     @app.get("/api/config")
     def configuration():
         mapping = app.config["MAPPING"]
+        settings = app.config["SETTINGS"]
         return jsonify(
             {
+                # Which instance this panel is pointed at. Hosts only: after the
+                # move from TEST to PRODUCTION on 2026-09-03 the same panel can
+                # be aimed at either, and a container id or an entity id read
+                # here means nothing until you know which server answered.
+                # Settings.secret_values() covers the three tokens; a hostname
+                # is not one of them.
+                "instance": {
+                    "glpi": _host(settings.glpi_url),
+                    "redmine": _host(settings.redmine_url),
+                },
                 # Presence only. Values never leave the server.
                 "env": [
                     {"name": name, "present": bool((os.environ.get(name) or "").strip())}
@@ -241,7 +400,24 @@ def _register_routes(app: Flask) -> None:
                         config.MANDATORY_CONTAINER26_COLUMNS
                     ),
                     "db_path": str(app.config["DB_PATH"]),
+                    "reports_dir": str(app.config["REPORTS_DIR"]),
                 },
+                # The numbers that decide where data lands and what gets cut.
+                # Every one of them has moved at least once (the entity default
+                # in 2026-08-12, the UTC offset in 2026-08-27, the document
+                # ceiling from 50 to 10 MB when .env moved to production), and
+                # none of them was visible anywhere in the panel.
+                "constants": {
+                    "default_entity_id": config.DEFAULT_ENTITY_ID,
+                    "utc_offset_hours": config.REDMINE_TO_GLPI_UTC_OFFSET_HOURS,
+                    "document_max_size_mb": config.DOCUMENT_MAX_SIZE_MB,
+                    "plugin_text_max_length": config.PLUGIN_TEXT_MAX_LENGTH,
+                    "container_task_additional_fields": (
+                        config.CONTAINER_ID_TASK_ADDITIONAL_FIELDS
+                    ),
+                },
+                "batch_projects": _batch_projects(),
+                "entity_map": _entity_rows(),
                 "mapping": {
                     section: _mapping_rows(mapping.get(section) or [])
                     for section in (
@@ -259,6 +435,56 @@ def _register_routes(app: Flask) -> None:
                 "user_map": _safe_yaml("user_map.yml"),
             }
         )
+
+
+def _host(url: str) -> str:
+    """The host of a configured URL, for display. Never the credentials."""
+    parts = urlsplit(url if "//" in url else f"//{url}")
+    return parts.hostname or url
+
+
+def _batch_projects() -> list[dict]:
+    """The Redmine projects the batch view can run, with their root tracker."""
+    return [
+        {"id": name, "tracker": tracker}
+        for name, tracker in sorted(REDMINE_PROJECTS.items())
+    ]
+
+
+def _entity_rows() -> dict:
+    """Cliente -> GLPI entity, from entity_map.yml, one row per client name.
+
+    Shown because it decides the entity of every project written, and because a
+    Cliente missing from it is NOT an error - the project quietly goes to
+    DEFAULT_ENTITY_ID instead. Reading the file is the only way to see that
+    coming; 1060 of 5594 roots (19%) landed there when the map was measured.
+
+    The file's own shape is entity-first (one entity, many clients); the panel
+    is read client-first, because the question an operator asks is "where does
+    THIS cliente go". `nao_sera_migrado` is returned separately and NOT folded
+    in: those names are in the sheet deliberately, and showing them as merely
+    absent would lose the distinction between "withheld" and "not yet mapped".
+    """
+    data = _safe_yaml(config.ENTITY_MAP_FILENAME)
+    if not isinstance(data, dict):
+        return {"clients": [], "nao_sera_migrado": []}
+
+    rows = []
+    for entry in data.get("entities") or []:
+        completename = str(entry.get("completename") or "").strip()
+        for client in entry.get("clients") or []:
+            rows.append(
+                {
+                    "client": str(client),
+                    "entity": completename,
+                    "id_teste": entry.get("id_teste"),
+                }
+            )
+    rows.sort(key=lambda row: row["client"].casefold())
+    return {
+        "clients": rows,
+        "nao_sera_migrado": [str(name) for name in data.get("nao_sera_migrado") or []],
+    }
 
 
 def _mapping_rows(entries: list) -> list[dict]:

@@ -567,3 +567,58 @@ table.data tbody tr:last-child td { border-bottom: 0; }
   main { padding: 16px; }
   .brand-text small { display: none; }
 }
+
+/* ------------------------------------------------------------------- lote */
+
+/* The project selector matches the number inputs beside it; a bare <select>
+   would otherwise render in the browser's own light chrome on a dark panel. */
+select {
+  font: inherit;
+  color: var(--text);
+  background: var(--surface-3);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 8px 11px;
+  min-width: 240px;
+}
+select:focus-visible {
+  outline: none;
+  border-color: var(--red);
+  box-shadow: 0 0 0 3px var(--red-tint);
+}
+
+.hint {
+  font-size: 11px;
+  color: var(--text-3);
+  line-height: 1.45;
+}
+
+.progress {
+  height: 8px;
+  border-radius: 999px;
+  background: var(--surface-3);
+  overflow: hidden;
+  margin: 4px 0 14px;
+}
+.progress-fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--red);
+  transition: width 120ms linear;
+}
+
+/* The item table is capped at MAX_BATCH_ROWS, but 400 rows is still taller
+   than any screen; it scrolls inside the card so the summary below it stays
+   reachable during a run. */
+.table-scroll { max-height: 420px; overflow-y: auto; }
+
+.link { color: var(--text-2); text-decoration: underline; }
+.link:hover { color: var(--text); }
+
+/* A resume button sits inside a table cell, where the default button padding
+   makes the rows uneven. */
+.data td .btn { padding: 4px 10px; font-size: 12px; }
+
+/* Two actions can share a run's cell (Ver relatório + Retomar). */
+.data td .btn + .btn { margin-left: 6px; }

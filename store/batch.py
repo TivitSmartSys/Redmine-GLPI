@@ -111,6 +111,86 @@ class BatchLedger:
         ).fetchall()
         return [int(row["issue_id"]) for row in rows]
 
+    def runs(self) -> list[dict]:
+        """Every run this ledger knows, newest first, with its state counts.
+
+        For the panel's resume list. `pending()` answers what is left to do;
+        it cannot say which project a run belonged to, nor distinguish a run
+        that finished cleanly from one that died at item 900 - and those are
+        exactly the two things an operator picks a run to resume by.
+
+        A LEFT JOIN, not an inner one: a run that died before `queue()` has no
+        batch_item rows at all, and dropping it from the list would hide the
+        very failure the operator came looking for.
+
+        Ordered by started_at then rowid, because start_run() stamps whole
+        seconds - two runs started in the same second would otherwise come back
+        in an arbitrary order.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT r.run_id, r.label, r.started_at, i.state, COUNT(i.issue_id) AS n
+            FROM batch_run r
+            LEFT JOIN batch_item i ON i.run_id = r.run_id
+            GROUP BY r.run_id, i.state
+            ORDER BY r.started_at DESC, r.rowid DESC
+            """
+        ).fetchall()
+
+        runs: dict[str, dict] = {}
+        for row in rows:
+            entry = runs.setdefault(
+                row["run_id"],
+                {
+                    "run_id": row["run_id"],
+                    "label": row["label"],
+                    "started_at": row["started_at"],
+                    "counts": {},
+                },
+            )
+            # The LEFT JOIN yields one row with state NULL for an empty run.
+            if row["state"] is not None:
+                entry["counts"][str(row["state"])] = int(row["n"])
+
+        result = list(runs.values())
+        for entry in result:
+            entry["total"] = sum(entry["counts"].values())
+            entry["resumable"] = sum(
+                entry["counts"].get(state, 0) for state in RETRYABLE
+            )
+        return result
+
+    def run_label(self, run_id: str) -> str | None:
+        """Which project a run belongs to, or None when the run is unknown."""
+        row = self._conn.execute(
+            "SELECT label FROM batch_run WHERE run_id = ?", (str(run_id),)
+        ).fetchone()
+        return str(row["label"]) if row is not None else None
+
+    def items(self, run_id: str) -> list[dict]:
+        """Every item of a run, in queue order, with its state and reason.
+
+        This is what rebuilds the panel's progress table for a run that has
+        already finished. The live table is built from events, which exist only
+        while the process that produced them is alive; the ledger is the only
+        durable record of which root ended up in which state and why.
+
+        Queue order, not update order: it is the order the operator watched.
+        """
+        rows = self._conn.execute(
+            "SELECT issue_id, state, detail FROM batch_item "
+            "WHERE run_id = ? ORDER BY position",
+            (str(run_id),),
+        ).fetchall()
+        return [
+            {
+                "issue_id": int(row["issue_id"]),
+                "state": str(row["state"]),
+                "detail": str(row["detail"] or ""),
+            }
+            for row in rows
+        ]
+
     def counts(self, run_id: str) -> dict[str, int]:
         rows = self._conn.execute(
             "SELECT state, COUNT(*) AS n FROM batch_item WHERE run_id = ? GROUP BY state",

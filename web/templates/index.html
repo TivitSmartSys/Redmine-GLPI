@@ -36,6 +36,7 @@
 <div class="shell">
   <nav class="sidebar" aria-label="Seções">
     <button type="button" class="nav-item is-active" data-view="migration">{{ ui.UI_NAV_MIGRATION }}</button>
+    <button type="button" class="nav-item" data-view="batch">{{ ui.UI_NAV_BATCH }}</button>
     <button type="button" class="nav-item" data-view="audit">{{ ui.UI_NAV_AUDIT }}</button>
     <button type="button" class="nav-item" data-view="history">{{ ui.UI_NAV_HISTORY }}</button>
     <button type="button" class="nav-item" data-view="config">{{ ui.UI_NAV_CONFIG }}</button>
@@ -88,6 +89,108 @@
         </div>
         <pre class="report" id="report" tabindex="0"></pre>
       </div>
+    </section>
+
+    <!-- ============================== LOTE ============================== -->
+    <section class="view" id="view-batch">
+      <p class="intro">{{ ui.UI_BATCH_INTRO }}</p>
+
+      <div class="card card-run">
+        <div class="field">
+          <label for="batch-project">{{ ui.UI_BATCH_PROJECT_LABEL }}</label>
+          <select id="batch-project">
+            {% for project in batch_projects %}
+            <option value="{{ project.id }}">{{ project.id }} — tracker {{ project.tracker }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="batch-limit">{{ ui.UI_BATCH_LIMIT_LABEL }}</label>
+          <input type="number" id="batch-limit" inputmode="numeric" min="1"
+                 placeholder="{{ ui.UI_BATCH_LIMIT_PLACEHOLDER }}" autocomplete="off">
+          <small class="hint">{{ ui.UI_BATCH_LIMIT_HINT }}</small>
+        </div>
+        <div class="field">
+          <span class="label">Modo</span>
+          <div class="segmented" id="batch-mode" role="radiogroup">
+            <button type="button" role="radio" aria-checked="true" class="is-active"
+                    data-mode="dry">{{ ui.UI_MODE_DRY_RUN }}</button>
+            <button type="button" role="radio" aria-checked="false"
+                    data-mode="apply">{{ ui.UI_MODE_APPLY }}</button>
+          </div>
+        </div>
+        <button type="button" class="btn btn-primary" id="run-batch">{{ ui.UI_BATCH_RUN }}</button>
+      </div>
+
+      <p class="notice" id="batch-error" hidden></p>
+
+      <div class="card" id="batch-progress-card" hidden>
+        <div class="card-head">
+          <h2 id="batch-progress-title"></h2>
+          <span class="spinner" id="batch-spinner" hidden aria-hidden="true"></span>
+        </div>
+        <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+             aria-valuenow="0" id="batch-progress">
+          <span class="progress-fill" id="batch-progress-fill"></span>
+        </div>
+        <div class="kpi-row" id="batch-kpi"></div>
+        <div class="table-wrap table-scroll">
+          <table class="data" id="batch-table">
+            <thead><tr>
+              <th class="num">{{ ui.UI_BATCH_COL_ISSUE }}</th>
+              <th>{{ ui.UI_BATCH_COL_STATE }}</th>
+              <th>{{ ui.UI_BATCH_COL_DETAIL }}</th>
+              <th>{{ ui.UI_BATCH_COL_REPORT }}</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card card-report" id="batch-summary-card" hidden>
+        <div class="card-head">
+          <h2>{{ ui.UI_BATCH_SUMMARY_HEADING }}</h2>
+          <div class="actions">
+            <a class="btn btn-ghost" id="batch-download" download>{{ ui.UI_BATCH_SUMMARY_DOWNLOAD }}</a>
+          </div>
+        </div>
+        <pre class="report" id="batch-summary" tabindex="0"></pre>
+      </div>
+
+      <div class="card card-console" id="batch-console-card" hidden>
+        <div class="card-head">
+          <h2>{{ ui.UI_CONSOLE_HEADING }}</h2>
+          <small class="hint">{{ ui.UI_BATCH_LOG_TRUNCATED }}</small>
+          <div class="actions">
+            <a class="btn btn-ghost" id="batch-console-download" download hidden>{{ ui.UI_BATCH_CONSOLE_DOWNLOAD }}</a>
+          </div>
+        </div>
+        <pre class="console" id="batch-console" tabindex="0"></pre>
+      </div>
+
+      <section class="config-section">
+        <h3>{{ ui.UI_BATCH_RUNS_HEADING }}</h3>
+        <div class="card">
+          <div class="card-head">
+            <small class="hint">{{ ui.UI_BATCH_RUNS_INTRO }}</small>
+            <button type="button" class="btn btn-ghost" id="batch-runs-reload">Atualizar</button>
+          </div>
+          <div class="table-wrap">
+            <table class="data" id="batch-runs-table">
+              <thead><tr>
+                <th>{{ ui.UI_BATCH_COL_RUN }}</th>
+                <th>{{ ui.UI_BATCH_COL_PROJECT }}</th>
+                <th>{{ ui.UI_BATCH_COL_STARTED }}</th>
+                <th class="num">{{ ui.UI_BATCH_COL_TOTAL }}</th>
+                <th class="num">{{ ui.UI_BATCH_COL_RESUMABLE }}</th>
+                <th></th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <p class="empty" id="batch-runs-empty" hidden>{{ ui.UI_BATCH_NO_RUNS }}</p>
+        </div>
+      </section>
     </section>
 
     <!-- ============================ AUDITORIA =========================== -->
@@ -158,6 +261,10 @@
     <!-- =========================== CONFIGURAÇÃO ========================= -->
     <section class="view" id="view-config">
       <p class="intro">{{ ui.UI_CONFIG_INTRO }}</p>
+      <div class="card card-run">
+        <button type="button" class="btn btn-ghost" id="config-reload">{{ ui.UI_CONFIG_RELOAD }}</button>
+      </div>
+      <p class="notice" id="config-error" hidden></p>
       <div id="config-body"></div>
     </section>
 
@@ -168,7 +275,7 @@
 <div class="modal-backdrop" id="confirm-modal" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
     <h2 id="confirm-title"><span class="icon" aria-hidden="true">!</span>{{ ui.UI_CONFIRM_TITLE }}</h2>
-    <p>{{ ui.UI_CONFIRM_BODY }}</p>
+    <p id="confirm-body">{{ ui.UI_CONFIRM_BODY }}</p>
     <label for="confirm-input">{{ ui.UI_CONFIRM_HINT }}</label>
     <input type="text" id="confirm-input" autocomplete="off" spellcheck="false" placeholder="sim">
     <p class="notice" id="confirm-error" hidden>{{ ui.UI_CONFIRM_REJECTED }}</p>

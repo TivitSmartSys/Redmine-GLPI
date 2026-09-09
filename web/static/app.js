@@ -44,6 +44,13 @@ function lineClass(line) {
   return "";
 }
 
+/* A batch prints hundreds of thousands of lines. The server already caps what
+ * it retains (MAX_BATCH_LOG_EVENTS); this caps what the DOM holds, which is a
+ * separate budget - a <pre> with 300k <span> children stops scrolling long
+ * before the process runs out of memory. The complete record is on disk under
+ * reports/<execução>/, which is what UI_BATCH_LOG_TRUNCATED tells the reader. */
+const MAX_CONSOLE_LINES = 4000;
+
 function appendLines(target, text) {
   const atBottom = target.scrollHeight - target.scrollTop - target.clientHeight < 40;
   const fragment = document.createDocumentFragment();
@@ -55,6 +62,9 @@ function appendLines(target, text) {
     fragment.appendChild(span);
   }
   target.appendChild(fragment);
+  while (target.childElementCount > MAX_CONSOLE_LINES) {
+    target.removeChild(target.firstChild);
+  }
   if (atBottom) target.scrollTop = target.scrollHeight;
 }
 
@@ -106,8 +116,16 @@ document.querySelectorAll(".nav-item").forEach((button) => {
     document.querySelectorAll(".view").forEach((v) => v.classList.remove("is-active"));
     button.classList.add("is-active");
     $("view-" + button.dataset.view).classList.add("is-active");
+    // Migração and Lote each own a mode switch. The banner warns about the
+    // view you are looking at, so it follows the view rather than whichever
+    // switch was touched last.
+    const active = button.dataset.view === "batch" ? batchMode : mode;
+    $("apply-banner").hidden =
+      active !== "apply" || !["migration", "batch"].includes(button.dataset.view);
+
     if (button.dataset.view === "history") loadHistory();
     if (button.dataset.view === "config") loadConfig();
+    if (button.dataset.view === "batch") loadBatchRuns();
   });
 });
 
@@ -181,7 +199,9 @@ $("run").addEventListener("click", async () => {
         $("report-card").hidden = false;
         $("summary").hidden = false;
       },
-      onAwaitingConfirm: openConfirm,
+      // Called with the event payload; the single-issue gate wants the default
+      // wording, so the argument is dropped rather than passed through.
+      onAwaitingConfirm: () => openConfirm(),
       onError: (detail) => showError($("run-error"), detail),
       onDone: () => setRunning(false),
     });
@@ -282,8 +302,19 @@ function listen(jobId, handlers) {
   stream.addEventListener("audit_result", (event) => {
     if (handlers.onAuditResult) handlers.onAuditResult(JSON.parse(event.data).data);
   });
-  stream.addEventListener("awaiting_confirm", () => {
-    if (handlers.onAwaitingConfirm) handlers.onAwaitingConfirm();
+  stream.addEventListener("awaiting_confirm", (event) => {
+    // The payload carries the queue size for a batch; the single-issue path
+    // sends only a timeout and ignores it.
+    if (handlers.onAwaitingConfirm) handlers.onAwaitingConfirm(JSON.parse(event.data).data);
+  });
+  stream.addEventListener("batch_queue", (event) => {
+    if (handlers.onBatchQueue) handlers.onBatchQueue(JSON.parse(event.data).data);
+  });
+  stream.addEventListener("batch_item", (event) => {
+    if (handlers.onBatchItem) handlers.onBatchItem(JSON.parse(event.data).data);
+  });
+  stream.addEventListener("batch_summary", (event) => {
+    if (handlers.onBatchSummary) handlers.onBatchSummary(JSON.parse(event.data).data);
   });
   stream.addEventListener("error", (event) => {
     // SSE also fires a nameless 'error' on transport failure; only ours has data.
@@ -304,7 +335,12 @@ function listen(jobId, handlers) {
 
 /* ------------------------------------------------------- confirmation modal */
 
-function openConfirm() {
+/* Shared by both write paths. `body` lets the batch state the number of
+ * projects the operator is about to approve - the single-issue wording ("o
+ * relatório acima descreve exatamente o que será criado") is false for a queue
+ * of 5451, where no per-item report has been rendered yet. */
+function openConfirm(body) {
+  $("confirm-body").textContent = body || UI.UI_CONFIRM_BODY;
   $("confirm-error").hidden = true;
   $("confirm-input").value = "";
   $("confirm-ok").disabled = true;
@@ -424,6 +460,311 @@ function renderAudit(result) {
   $("audit-summary").hidden = false;
 }
 
+/* --------------------------------------------------------------------- lote */
+
+let batchMode = "dry";
+let batchRunId = "";
+/* Counts are kept here rather than read back off the table, because the table
+ * is capped (see MAX_BATCH_ROWS) and the numbers must stay exact: the four
+ * states adding up to the queue size is the one arithmetic the batch report
+ * exists to guarantee. */
+let batchCounts = { ok: 0, failed: 0, skipped: 0 };
+let batchTotal = 0;
+
+/* How many item rows the table keeps. A failure row is never dropped - the
+ * reason a run went wrong is the whole point of looking - so only successes and
+ * skips are trimmed, oldest first. */
+const MAX_BATCH_ROWS = 400;
+
+const BATCH_STATE_LABEL = {
+  ok: () => UI.UI_BATCH_STATE_OK,
+  failed: () => UI.UI_BATCH_STATE_FAILED,
+  skipped: () => UI.UI_BATCH_STATE_SKIPPED,
+  pending: () => UI.UI_BATCH_STATE_PENDING,
+};
+
+const BATCH_STATE_PILL = { ok: "is-ok", failed: "is-bad", skipped: "is-mono" };
+
+$("batch-mode").addEventListener("click", (event) => {
+  const button = event.target.closest("button[data-mode]");
+  if (!button) return;
+  batchMode = button.dataset.mode;
+  $("batch-mode").querySelectorAll("button").forEach((b) => {
+    const active = b === button;
+    b.classList.toggle("is-active", active);
+    b.setAttribute("aria-checked", String(active));
+  });
+  $("apply-banner").hidden = batchMode !== "apply";
+  $("run-batch").textContent =
+    batchMode === "apply" ? UI.UI_BATCH_RUN_APPLY : UI.UI_BATCH_RUN;
+});
+
+$("run-batch").addEventListener("click", () => {
+  const limitRaw = $("batch-limit").value.trim();
+  const payload = { project: $("batch-project").value, mode: batchMode };
+  if (limitRaw !== "") payload.limit = parseInt(limitRaw, 10);
+  startBatch("/api/batch", payload);
+});
+
+$("batch-runs-reload").addEventListener("click", loadBatchRuns);
+
+async function startBatch(path, payload) {
+  $("batch-error").hidden = true;
+  resetBatchView();
+  setBatchRunning(true);
+
+  try {
+    const { job_id } = await postJSON(path, payload);
+    currentJob = job_id;
+    $("batch-download").href = `/api/jobs/${job_id}/report`;
+    listen(job_id, {
+      console: $("batch-console"),
+      onBatchQueue: onBatchQueue,
+      onBatchItem: onBatchItem,
+      onBatchSummary: onBatchSummary,
+      onAwaitingConfirm: (data) =>
+        openConfirm(fill(UI.UI_BATCH_CONFIRM_BODY, { count: (data && data.count) || 0 })),
+      onError: (detail) => showError($("batch-error"), detail),
+      onDone: () => {
+        setBatchRunning(false);
+        loadBatchRuns();
+      },
+    });
+  } catch (error) {
+    setBatchRunning(false);
+    showError($("batch-error"), error.message);
+  }
+}
+
+function resetBatchView() {
+  batchCounts = { ok: 0, failed: 0, skipped: 0 };
+  batchTotal = 0;
+  batchRunId = "";
+  $("batch-console").textContent = "";
+  $("batch-console-card").hidden = false;
+  $("batch-console-download").hidden = true;
+  $("batch-table").querySelector("tbody").textContent = "";
+  $("batch-summary-card").hidden = true;
+  $("batch-progress-card").hidden = true;
+  $("batch-progress-title").textContent = "";
+  setBatchProgress(0, 0);
+}
+
+function setBatchRunning(running) {
+  $("run-batch").disabled = running;
+  $("run-batch").textContent = running
+    ? UI.UI_RUNNING
+    : batchMode === "apply"
+    ? UI.UI_BATCH_RUN_APPLY
+    : UI.UI_BATCH_RUN;
+  $("batch-spinner").hidden = !running;
+  document
+    .querySelectorAll("#batch-runs-table button")
+    .forEach((button) => (button.disabled = running));
+}
+
+function onBatchQueue(data) {
+  batchTotal = data.count;
+  batchRunId = data.run_id;
+  $("batch-progress-card").hidden = false;
+  $("batch-progress-title").textContent = data.count
+    ? fill(UI.UI_BATCH_QUEUE_FOUND, { count: data.count, run_id: data.run_id })
+    : UI.UI_BATCH_QUEUE_EMPTY;
+  setBatchProgress(0, data.count);
+  renderBatchKpis();
+
+  // Offered from here on, not only at the end: the file is written
+  // line-buffered, so on a long run this is how you read what has happened so
+  // far - and it is all that survives if the run dies partway.
+  $("batch-console-download").href = batchConsoleUrl(data.run_id);
+  $("batch-console-download").hidden = false;
+}
+
+function onBatchItem(item) {
+  batchCounts[item.state] = (batchCounts[item.state] || 0) + 1;
+  setBatchProgress(item.position, item.total || batchTotal);
+  renderBatchKpis();
+  appendBatchRow(item);
+}
+
+function setBatchProgress(done, total) {
+  const percent = total ? Math.round((done / total) * 100) : 0;
+  $("batch-progress-fill").style.width = percent + "%";
+  $("batch-progress").setAttribute("aria-valuenow", String(percent));
+  $("batch-progress").setAttribute(
+    "aria-valuetext",
+    fill(UI.UI_BATCH_PROGRESS, { done, total })
+  );
+}
+
+function renderBatchKpis() {
+  const row = $("batch-kpi");
+  row.textContent = "";
+  const done = batchCounts.ok + batchCounts.failed + batchCounts.skipped;
+  row.appendChild(
+    kpi(UI.UI_BATCH_COL_TOTAL, batchTotal, fill(UI.UI_BATCH_PROGRESS, { done, total: batchTotal }), "accent")
+  );
+  row.appendChild(kpi(UI.UI_BATCH_STATE_OK, batchCounts.ok));
+  row.appendChild(kpi(UI.UI_BATCH_STATE_SKIPPED, batchCounts.skipped));
+  row.appendChild(
+    kpi(UI.UI_BATCH_STATE_FAILED, batchCounts.failed, null, batchCounts.failed ? "critical" : null)
+  );
+}
+
+function appendBatchRow(item) {
+  const body = $("batch-table").querySelector("tbody");
+  const tr = document.createElement("tr");
+  tr.dataset.state = item.state;
+  tr.appendChild(el("td", "num strong", item.issue_id));
+
+  const state = document.createElement("td");
+  const label = BATCH_STATE_LABEL[item.state];
+  state.appendChild(
+    el("span", "pill " + (BATCH_STATE_PILL[item.state] || ""), label ? label() : item.state)
+  );
+  tr.appendChild(state);
+  tr.appendChild(el("td", "wrap", item.detail || "—"));
+
+  const report = document.createElement("td");
+  // Only a migrated item has a report file; a skip never built a plan and a
+  // failure may have died before the report was written.
+  if (item.state === "ok" && batchRunId) {
+    const link = el("a", "link", UI.UI_BATCH_ITEM_REPORT);
+    link.href = `/api/batch/runs/${encodeURIComponent(batchRunId)}/reports/${item.issue_id}`;
+    link.target = "_blank";
+    link.rel = "noopener";
+    report.appendChild(link);
+  } else {
+    report.textContent = "—";
+  }
+  tr.appendChild(report);
+  body.appendChild(tr);
+  trimBatchRows(body);
+}
+
+function trimBatchRows(body) {
+  let excess = body.childElementCount - MAX_BATCH_ROWS;
+  if (excess <= 0) return;
+  for (const row of Array.from(body.children)) {
+    if (excess <= 0) break;
+    if (row.dataset.state === "failed") continue; // failures are why you look
+    body.removeChild(row);
+    excess -= 1;
+  }
+}
+
+function onBatchSummary(data) {
+  renderText($("batch-summary"), data.text);
+  $("batch-summary-card").hidden = false;
+  // Re-point the download at the RUN, now that the run is finished and its
+  // resumo.txt exists. The job-id URL works only until this process restarts.
+  if (batchRunId) $("batch-download").href = batchSummaryUrl(batchRunId);
+}
+
+function batchSummaryUrl(runId) {
+  return `/api/batch/runs/${encodeURIComponent(runId)}/summary`;
+}
+
+/* Reopen a finished run. Everything here comes from the ledger and from disk,
+ * so it works after a refresh, after a restart, and for runs driven from the
+ * CLI before this view existed. */
+function batchConsoleUrl(runId) {
+  return `/api/batch/runs/${encodeURIComponent(runId)}/console`;
+}
+
+/** Plain text from a route that may legitimately have nothing to give. */
+async function fetchText(url) {
+  const response = await fetch(url);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.text();
+}
+
+async function openBatchRun(run) {
+  $("batch-error").hidden = true;
+  resetBatchView();
+  $("batch-console-card").hidden = true;
+  batchRunId = run.run_id;
+
+  let items;
+  let summary;
+  let transcript;
+  try {
+    items = await api(`/api/batch/runs/${encodeURIComponent(run.run_id)}/items`);
+    summary = await fetchText(batchSummaryUrl(run.run_id));
+    // A run from before the transcript existed has none, which is not an
+    // error - the card simply stays hidden.
+    transcript = await fetchText(batchConsoleUrl(run.run_id));
+  } catch (error) {
+    showError($("batch-error"), error.message);
+    return;
+  }
+
+  if (transcript !== null) {
+    renderText($("batch-console"), transcript);
+    $("batch-console-download").href = batchConsoleUrl(run.run_id);
+    $("batch-console-download").hidden = false;
+    $("batch-console-card").hidden = false;
+  }
+
+  batchTotal = items.length;
+  batchCounts = { ok: 0, failed: 0, skipped: 0 };
+  $("batch-progress-card").hidden = false;
+  $("batch-progress-title").textContent = fill(UI.UI_BATCH_VIEWING, {
+    run_id: run.run_id,
+    label: run.label,
+  });
+  for (const item of items) {
+    batchCounts[item.state] = (batchCounts[item.state] || 0) + 1;
+    appendBatchRow(item);
+  }
+  const done = batchCounts.ok + batchCounts.failed + batchCounts.skipped;
+  setBatchProgress(done, batchTotal);
+  renderBatchKpis();
+
+  renderText($("batch-summary"), summary);
+  $("batch-download").href = batchSummaryUrl(run.run_id);
+  $("batch-summary-card").hidden = false;
+}
+
+async function loadBatchRuns() {
+  const runs = await api("/api/batch/runs").catch(() => []);
+  const body = $("batch-runs-table").querySelector("tbody");
+  body.textContent = "";
+
+  for (const run of runs) {
+    const tr = document.createElement("tr");
+    tr.appendChild(el("td", "is-mono", run.run_id));
+    tr.appendChild(el("td", "strong", run.label));
+    tr.appendChild(el("td", null, String(run.started_at).replace("T", " ")));
+    tr.appendChild(el("td", "num", run.total));
+    tr.appendChild(el("td", "num", run.resumable));
+
+    const actions = document.createElement("td");
+    // Unconditional: a run with nothing left to resume is exactly the case that
+    // used to render no actions at all, which is how a finished run's report
+    // became unreachable after a refresh.
+    const open = el("button", "btn btn-ghost", UI.UI_BATCH_OPEN);
+    open.type = "button";
+    open.addEventListener("click", () => openBatchRun(run));
+    actions.appendChild(open);
+
+    if (run.resumable) {
+      const button = el("button", "btn btn-ghost", UI.UI_BATCH_RESUME);
+      button.type = "button";
+      // Resume follows the mode selected above, so retaking a run in Gravação
+      // still goes through the confirmation gate.
+      button.addEventListener("click", () =>
+        startBatch("/api/batch/resume", { run_id: run.run_id, mode: batchMode })
+      );
+      actions.appendChild(button);
+    }
+    tr.appendChild(actions);
+    body.appendChild(tr);
+  }
+  $("batch-runs-empty").hidden = runs.length > 0;
+}
+
 /* ------------------------------------------------------------------ history */
 
 let historyRows = [];
@@ -472,12 +813,34 @@ let configLoaded = false;
 
 async function loadConfig() {
   if (configLoaded) return;
-  const data = await api("/api/config").catch(() => null);
-  if (!data) return;
+  let data;
+  try {
+    data = await api("/api/config");
+  } catch (error) {
+    // Swallowing this used to leave the tab simply blank, which reads as "there
+    // is no configuration" rather than "the panel could not read it".
+    showError($("config-error"), fill(UI.UI_CONFIG_ERROR, { detail: error.message }));
+    return;
+  }
+  $("config-error").hidden = true;
   configLoaded = true;
 
   const root = $("config-body");
   root.textContent = "";
+
+  // First card, deliberately: a container id or an entity id below means
+  // nothing until you know which instance answered. TEST and PRODUCTION number
+  // the same containers differently (15/26 there, 17/18 here).
+  root.appendChild(
+    kvCard(
+      UI.UI_CONFIG_INSTANCE,
+      [
+        [UI.UI_CONFIG_INSTANCE_GLPI, data.instance.glpi],
+        [UI.UI_CONFIG_INSTANCE_REDMINE, data.instance.redmine],
+      ],
+      UI.UI_CONFIG_INSTANCE_INTRO
+    )
+  );
 
   root.appendChild(
     kvCard(
@@ -491,16 +854,47 @@ async function loadConfig() {
   );
 
   const scope = data.scope;
+  const types = Object.entries(scope.projecttasktypes || {})
+    .map(([tracker, type]) => `${tracker} → ${type}`)
+    .join(", ");
   root.appendChild(
     kvCard(UI.UI_CONFIG_SCOPE, [
       ["Container campos adicionais", `${scope.container_additional_fields} — ${scope.itemtype_additional_fields}`],
       ["Container Faturamento", `${scope.container_faturamento} — ${scope.itemtype_faturamento}`],
+      ["Container tarefas (nunca gravado)", data.constants.container_task_additional_fields],
       ["Tracker Faturamento", scope.tracker_faturamento],
+      ["Tracker Atividades", scope.tracker_atividades],
       ["Trackers aceitos como raiz", scope.root_trackers.join(", ")],
       ["Trackers aceitos como tarefa", scope.task_trackers.join(", ")],
-      ["Colunas obrigatórias", scope.mandatory_columns.join(", ")],
+      ["Tracker → tipo de tarefa", types || UI.UI_EMPTY],
+      ["Colunas obrigatórias (container do projeto)", scope.mandatory_columns.join(", ")],
+      // Empty since 2026-08-07, and saying so is the point: the block vanishing
+      // from the report is a fact about GLPI's flags, not a rendering gap.
+      ["Colunas obrigatórias (container Faturamento)",
+        scope.mandatory_columns_container26.join(", ") || UI.UI_EMPTY],
       ["Banco local", scope.db_path],
+      ["Diretório de relatórios", scope.reports_dir],
     ])
+  );
+
+  const constants = data.constants;
+  root.appendChild(
+    kvCard(UI.UI_CONFIG_CONSTANTS, [
+      ["Entidade padrão (Cliente sem entidade)", constants.default_entity_id],
+      ["Ajuste de fuso Redmine → GLPI (horas)", constants.utc_offset_hours],
+      ["Tamanho máximo de anexo (MB, limite do GLPI)", constants.document_max_size_mb],
+      ["Corte de texto em campos do plugin (caracteres)", constants.plugin_text_max_length],
+    ])
+  );
+
+  root.appendChild(
+    kvCard(
+      UI.UI_CONFIG_BATCH_PROJECTS,
+      (data.batch_projects || []).map((project) => [
+        project.id,
+        "tracker " + project.tracker,
+      ])
+    )
   );
 
   for (const [section, rows] of Object.entries(data.mapping)) {
@@ -537,7 +931,67 @@ async function loadConfig() {
       ])
     )
   );
+
+  root.appendChild(entityCard(data.entity_map || {}));
 }
+
+/* The map that decides where every project lands. Listed client-first, because
+ * "where does THIS cliente go" is the question being asked - the YAML file is
+ * entity-first, which is the wrong index for reading. */
+function entityCard(entityMap) {
+  const wrapper = el("section", "config-section");
+  wrapper.appendChild(el("h3", null, UI.UI_CONFIG_ENTITY_MAP));
+  const card = el("div", "card");
+  card.appendChild(el("p", "empty", UI.UI_CONFIG_ENTITY_MAP_INTRO));
+
+  const wrap = el("div", "table-wrap");
+  const table = el("table", "data");
+  const thead = document.createElement("thead");
+  const head = document.createElement("tr");
+  for (const label of ["Cliente (Redmine)", "Entidade (GLPI)", UI.UI_CONFIG_ENTITY_MAP_ID_TESTE]) {
+    head.appendChild(el("th", null, label));
+  }
+  thead.appendChild(head);
+  table.appendChild(thead);
+
+  const body = document.createElement("tbody");
+  for (const row of entityMap.clients || []) {
+    const tr = document.createElement("tr");
+    tr.appendChild(el("td", "strong", row.client));
+    tr.appendChild(el("td", "wrap", row.entity));
+    tr.appendChild(el("td", "num", row.id_teste === null ? "—" : row.id_teste));
+    body.appendChild(tr);
+  }
+  // Names the sheet withholds on purpose. Shown as their own rows rather than
+  // simply left out: "withheld" and "not yet mapped" are different facts, and
+  // both send the project to the default entity.
+  for (const name of entityMap.nao_sera_migrado || []) {
+    const tr = document.createElement("tr");
+    tr.appendChild(el("td", "strong", name));
+    const cell = el("td", "wrap");
+    cell.appendChild(el("span", "pill is-mono", "não será migrado"));
+    tr.appendChild(cell);
+    tr.appendChild(el("td", "num", "—"));
+    body.appendChild(tr);
+  }
+  if (!body.childElementCount) {
+    const tr = document.createElement("tr");
+    const td = el("td", null, UI.UI_EMPTY);
+    td.colSpan = 3;
+    tr.appendChild(td);
+    body.appendChild(tr);
+  }
+  table.appendChild(body);
+  wrap.appendChild(table);
+  card.appendChild(wrap);
+  wrapper.appendChild(card);
+  return wrapper;
+}
+
+$("config-reload").addEventListener("click", () => {
+  configLoaded = false;
+  loadConfig();
+});
 
 function kvCard(title, pairs, intro) {
   const section = el("section", "config-section");
