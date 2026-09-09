@@ -472,3 +472,107 @@ def test_the_run_list_carries_what_the_ui_needs_to_link_to_a_run(client, tmp_pat
     assert entry["run_id"] == run
     # Reachable regardless: the summary route answers for every known run.
     assert client.get(f"/api/batch/runs/{run}/summary").status_code == 200
+
+
+# -- the run transcript ------------------------------------------------------
+#
+# Reported 2026-09-08: the console text of a batch ("[1/6] RDM 19074", "[OK]
+# Projeto criado: GLPI 1033") was gone after a refresh. It lived only in
+# _EventLog, in memory, and for a batch it is trimmed on top of that. The CLI
+# never persisted it either - the August 2026 runs were captured by hand with a
+# shell redirect, which the panel has no equivalent of.
+
+
+def test_the_batch_writes_its_console_to_the_run_directory(client, monkeypatch, tmp_path):
+    patch_worker(monkeypatch, queue=(11,))
+
+    body = client.post("/api/batch", json={"project": "hydro", "mode": "dry"}).get_json()
+    job = client.application.config["JOBS"].get(body["job_id"])
+    wait_for(job)
+
+    transcript = (tmp_path / "reports" / job.run_id / "console.txt").read_text(
+        encoding="utf-8"
+    )
+    assert "Fila:" in transcript
+    assert job.run_id in transcript
+    # The mode line is printed before the run id - and so the file - can exist.
+    # Its presence is what proves the pending buffer is flushed on attach
+    # rather than discarded, i.e. that preflight output survives.
+    assert messages.CLI_MODE_DRY_RUN in transcript
+
+
+def test_the_transcript_is_served_by_run_id(client, monkeypatch, tmp_path):
+    patch_worker(monkeypatch, queue=(11,))
+    body = client.post("/api/batch", json={"project": "hydro", "mode": "dry"}).get_json()
+    job = client.application.config["JOBS"].get(body["job_id"])
+    wait_for(job)
+
+    response = client.get(f"/api/batch/runs/{job.run_id}/console")
+
+    assert response.status_code == 200
+    assert "Fila:" in response.get_data(as_text=True)
+
+
+def test_a_run_with_no_transcript_is_a_404_not_an_invention(client, tmp_path):
+    """Runs migrated before this existed have no console, and must say so.
+
+    Answering with a plausible-looking reconstruction would be worse than
+    answering nothing: the transcript's whole value is being what was printed.
+    """
+    with BatchLedger(tmp_path / "b.db") as ledger:
+        run = ledger.start_run("hydro")
+
+    assert client.get(f"/api/batch/runs/{run}/console").status_code == 404
+
+
+def test_an_unknown_run_has_no_transcript(client):
+    assert client.get("/api/batch/runs/nao-existe/console").status_code == 404
+
+
+def test_the_transcript_is_complete_even_when_the_live_log_is_trimmed(
+    client, monkeypatch, tmp_path
+):
+    """The in-memory cap is what makes a 5451-item run survivable.
+
+    It must not cost the record: the file is the complete transcript, which is
+    precisely what UI_BATCH_LOG_TRUNCATED promises the reader.
+    """
+    monkeypatch.setattr(jobs_module, "MAX_BATCH_LOG_EVENTS", 10)
+    calls = patch_worker(monkeypatch, queue=(11,))
+
+    def noisy_run_batch(glpi, redmine, mapping, ledger, run_id, issue_ids, **kwargs):
+        for number in range(200):
+            print(f"linha {number}")
+
+    monkeypatch.setattr(jobs_module, "run_batch", noisy_run_batch)
+
+    body = client.post("/api/batch", json={"project": "hydro", "mode": "dry"}).get_json()
+    job = client.application.config["JOBS"].get(body["job_id"])
+    wait_for(job)
+
+    transcript = client.get(f"/api/batch/runs/{job.run_id}/console").get_data(
+        as_text=True
+    )
+    assert "linha 0" in transcript, "the head is dropped from memory, not from disk"
+    assert "linha 199" in transcript
+    live = [event for event in job.log.follow(0) if event and event.type == "log"]
+    assert len(live) < 200, "the in-memory log is still capped"
+
+
+def test_a_transcript_that_cannot_be_written_does_not_end_the_run(
+    client, monkeypatch, tmp_path
+):
+    """Writing the console is bookkeeping; the migration is the work."""
+    calls = patch_worker(monkeypatch, queue=(11, 22))
+
+    def refuse(self, path):
+        raise OSError("disco cheio")
+
+    monkeypatch.setattr(jobs_module._LineWriter, "_open_sink", refuse)
+
+    body = client.post("/api/batch", json={"project": "hydro", "mode": "dry"}).get_json()
+    job = client.application.config["JOBS"].get(body["job_id"])
+    wait_for(job)
+
+    assert job.state == "done"
+    assert calls["issue_ids"] == [11, 22]

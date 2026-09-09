@@ -59,7 +59,7 @@ while the host project is alive; a project in the trash counts as orphaned.
 
 Exit codes: `0` ok, `1` failed/aborted, `2` configuration error.
 
-There is a pytest suite (`python -m pytest tests -q`, 258 tests) covering the
+There is a pytest suite (`python -m pytest tests -q`, 264 tests) covering the
 confirm gate, the summary figures, the VARCHAR(255) truncation, the client→entity
 map, the CEMIG scope rules and the root-tracker guard, the creation-date shift,
 and the attachment and
@@ -451,6 +451,25 @@ identity is the **run id**, which names both a ledger row and a
 restart; the runs table now renders **Ver relatório** unconditionally, because
 the row that led nowhere was precisely the fully successful run, whose
 `resumable` is 0.
+
+**The run's printed transcript is a third artefact, and it is written to
+disk.** Added 2026-09-08 for the same report: the console text - the order
+roots were taken in, the GLPI id each became, every warning printed while
+applying - is neither the counts (`resumo.txt`) nor the plan (the per-item
+reports), and it lived only in `_EventLog`. The CLI never persisted it either;
+the August 2026 runs were captured by hand with a shell redirect, which the
+panel has no equivalent of. `_LineWriter` now tees stdout to
+`reports/<run-id>/console.txt`, served by `/api/batch/runs/<run>/console`.
+
+Three things about it are deliberate. It is **line-buffered**, so a run that
+dies halfway still leaves everything it printed - which is when a transcript is
+worth most. It is **complete even though the in-memory log is capped**, which
+is what makes `MAX_BATCH_LOG_EVENTS` an honest trade rather than data loss. And
+the sink is attached **mid-run**, because the run id does not exist until the
+queue is built, so the lines printed before it - the mode line and the whole
+preflight - wait in a bounded `_pending` buffer that only a batch job fills.
+A run with no transcript answers **404** rather than a reconstruction: the
+transcript's value is being what was actually printed.
 
 The summary route prefers the `resumo.txt` on disk - that is the record the run
 actually wrote - and regenerates from the ledger when the file is absent.

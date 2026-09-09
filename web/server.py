@@ -212,6 +212,30 @@ def _register_routes(app: Flask) -> None:
             headers={"Content-Disposition": f'inline; filename="resumo_{run_id}.txt"'},
         )
 
+    @app.get("/api/batch/runs/<run_id>/console")
+    def batch_run_console(run_id: str):
+        """The run's printed transcript, as the operator watched it happen.
+
+        Distinct from resumo.txt (the counts) and from the per-item reports
+        (the plan): this is the narrative - the order roots were taken in, the
+        GLPI id each became, and every warning printed while applying.
+        """
+        jobs = _jobs(app)
+        if not jobs.run_exists(run_id):
+            return _error(
+                messages.UI_BATCH_RUN_NOT_FOUND.format(run_id=run_id), status=404
+            )
+        text = jobs.run_console(run_id)
+        if text is None:
+            # A run from before the transcript existed. Saying so beats
+            # inventing one.
+            return _error(messages.UI_BATCH_NO_CONSOLE, status=404)
+        return Response(
+            messages.redact(text),
+            mimetype="text/plain",
+            headers={"Content-Disposition": f'inline; filename="console_{run_id}.txt"'},
+        )
+
     @app.get("/api/batch/runs/<run_id>/items")
     def batch_run_items(run_id: str):
         """The rows that rebuild the progress table for a finished run."""

@@ -69,6 +69,15 @@ MAX_BATCH_LOG_EVENTS = 4000
 # thousands of writes and will want to read the queue count and the run id.
 BATCH_CONFIRM_TIMEOUT_SECONDS = 900
 
+# Lines held before the transcript file can be opened. The run id - and so the
+# directory - exists only after the queue is built, and preflight prints well
+# under this. A cap rather than an unbounded list, because an aborted preflight
+# never attaches a sink at all.
+MAX_PENDING_LOG_LINES = 2000
+
+# The batch transcript, beside the per-item reports it explains.
+CONSOLE_FILENAME = "console.txt"
+
 
 class JobBusy(Exception):
     """Another job is still running."""
@@ -196,22 +205,103 @@ def _scrub(data: Any) -> Any:
 
 
 class _LineWriter:
-    """stdout replacement that turns printed text into `log` events."""
+    """stdout replacement that turns printed text into `log` events.
 
-    def __init__(self, log: _EventLog) -> None:
+    For a batch it also tees every line to `reports/<run-id>/console.txt`. That
+    transcript is the run's operational narrative - the order items were taken
+    in, the GLPI id each root became, every warning printed while applying -
+    and until 2026-09-08 it existed nowhere but this process's memory, so a
+    page refresh or a restart lost it. The CLI never persisted it either; the
+    August 2026 runs were captured by hand with a shell redirect.
+
+    Two consequences worth keeping:
+      * the file is line-buffered, so a run that dies halfway still leaves
+        everything printed up to that point - which is when a transcript is
+        worth most;
+      * the file is complete even though the in-memory log is capped, which is
+        what makes MAX_BATCH_LOG_EVENTS an honest trade rather than data loss.
+
+    The run id only exists after the queue is built, so the sink is attached
+    mid-run and the lines printed before it (preflight) wait in `_pending`.
+    That buffer is bounded and only fills for a job that intends to attach one:
+    a single-issue job never does, and letting it accumulate would reintroduce
+    the very leak the cap exists to prevent.
+    """
+
+    def __init__(self, log: _EventLog, buffer_pending: bool = False) -> None:
         self._log = log
         self._buffer = ""
+        self._sink = None
+        self._pending: list[str] | None = [] if buffer_pending else None
+        self._sink_broken = False
+
+    # -- the transcript file ----------------------------------------------
+
+    def _open_sink(self, path: Path):
+        """Isolated so a test can refuse it; see the OSError handling below."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        return path.open("a", encoding="utf-8", errors="replace", buffering=1)
+
+    def attach_file(self, path: Path) -> None:
+        try:
+            self._sink = self._open_sink(path)
+            for line in self._pending or ():
+                self._sink.write(line + "\n")
+        except OSError as exc:
+            # Never fatal: the transcript is bookkeeping, the migration is the
+            # work. Reported through the log rather than print(), which would
+            # re-enter this writer.
+            self._sink = None
+            self._sink_broken = True
+            self._log.append(
+                "log",
+                messages.BATCH_CONSOLE_WRITE_FAILED.format(
+                    path=path, detail=messages.redact(exc)
+                ),
+            )
+        finally:
+            self._pending = None
+
+    def close_file(self) -> None:
+        if self._sink is not None:
+            try:
+                self._sink.close()
+            except OSError:
+                pass
+            self._sink = None
+
+    # -- stdout ------------------------------------------------------------
+
+    def _emit(self, line: str) -> None:
+        # Redacted once, here: the file leaves the process exactly as the event
+        # stream does, and rule 5 covers both.
+        line = messages.redact(line)
+        self._log.append("log", line)
+        if self._sink is not None:
+            try:
+                self._sink.write(line + "\n")
+            except OSError as exc:
+                self._sink = None
+                self._sink_broken = True
+                self._log.append(
+                    "log",
+                    messages.BATCH_CONSOLE_WRITE_FAILED.format(
+                        path=CONSOLE_FILENAME, detail=messages.redact(exc)
+                    ),
+                )
+        elif self._pending is not None and len(self._pending) < MAX_PENDING_LOG_LINES:
+            self._pending.append(line)
 
     def write(self, text: str) -> int:
         self._buffer += text
         while "\n" in self._buffer:
             line, self._buffer = self._buffer.split("\n", 1)
-            self._log.append("log", line)
+            self._emit(line)
         return len(text)
 
     def flush(self) -> None:
         if self._buffer:
-            self._log.append("log", self._buffer)
+            self._emit(self._buffer)
             self._buffer = ""
 
     def isatty(self) -> bool:
@@ -235,6 +325,7 @@ class Job:
         self.report_text: str = ""
         self.summary: dict | None = None
         self.run_id: str = ""     # batch only: the ledger run this job drives
+        self.writer = None        # set by JobManager._guard; tees the console
         self.log = _EventLog(max_log_events=max_log_events)
         # Read from the module at construction time, NOT as a default argument:
         # a default is bound once when the class is defined, which would freeze
@@ -367,7 +458,10 @@ class JobManager:
 
     def _guard(self, job: Job, target, *args) -> None:
         """Run a worker with stdout captured and every failure reported."""
-        writer = _LineWriter(job.log)
+        # Only a batch buffers ahead of a sink, and only a batch gets one: it is
+        # the one job kind whose transcript has to outlive the process.
+        writer = _LineWriter(job.log, buffer_pending=job.kind == "batch")
+        job.writer = writer
         try:
             with contextlib.redirect_stdout(writer):
                 target(job, *args)
@@ -380,8 +474,11 @@ class JobManager:
             traceback.print_exc()
             job.fail(messages.UI_UNEXPECTED_ERROR.format(detail=exc))
         finally:
+            # Closed after the last flush and after job.finish() has had its
+            # chance to print, so the transcript ends where the run ends.
             if not job.log.closed:
                 job.finish()
+            writer.close_file()
 
     # -- public entry points ----------------------------------------------
 
@@ -435,6 +532,19 @@ class JobManager:
     def items(self, run_id: str) -> list[dict]:
         with BatchLedger(self._db_path) as ledger:
             return ledger.items(run_id)
+
+    def run_console(self, run_id: str) -> str | None:
+        """A run's printed transcript, or None when it has none.
+
+        None rather than a reconstruction: the transcript's whole value is
+        being what was actually printed, so a run that predates this feature
+        must say it has nothing rather than offer a plausible substitute.
+        """
+        path = self._reports_dir / run_id / CONSOLE_FILENAME
+        try:
+            return path.read_text(encoding="utf-8")
+        except OSError:
+            return None
 
     def run_summary(self, run_id: str) -> str:
         """A finished run's summary, addressed by RUN id rather than job id.
@@ -563,6 +673,13 @@ class JobManager:
                     ledger.queue(run_id, queue)
 
                 job.run_id = run_id
+                # The earliest moment the transcript can be named. Everything
+                # printed before this - the mode line, the whole preflight -
+                # has been waiting in the writer's pending buffer.
+                report_dir = self._reports_dir / run_id
+                if job.writer is not None:
+                    job.writer.attach_file(report_dir / CONSOLE_FILENAME)
+
                 print(messages.BATCH_QUEUE.format(count=len(queue), run_id=run_id))
                 job.emit(
                     "batch_queue",
@@ -591,7 +708,6 @@ class JobManager:
                     return
 
                 job.emit("phase", "apply" if apply_mode else "plan")
-                report_dir = self._reports_dir / run_id
                 run_batch(
                     glpi, redmine, self._mapping, ledger, run_id, queue,
                     apply_mode=apply_mode,

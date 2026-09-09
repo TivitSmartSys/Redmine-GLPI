@@ -542,6 +542,7 @@ function resetBatchView() {
   batchRunId = "";
   $("batch-console").textContent = "";
   $("batch-console-card").hidden = false;
+  $("batch-console-download").hidden = true;
   $("batch-table").querySelector("tbody").textContent = "";
   $("batch-summary-card").hidden = true;
   $("batch-progress-card").hidden = true;
@@ -571,6 +572,12 @@ function onBatchQueue(data) {
     : UI.UI_BATCH_QUEUE_EMPTY;
   setBatchProgress(0, data.count);
   renderBatchKpis();
+
+  // Offered from here on, not only at the end: the file is written
+  // line-buffered, so on a long run this is how you read what has happened so
+  // far - and it is all that survives if the run dies partway.
+  $("batch-console-download").href = batchConsoleUrl(data.run_id);
+  $("batch-console-download").hidden = false;
 }
 
 function onBatchItem(item) {
@@ -661,23 +668,43 @@ function batchSummaryUrl(runId) {
 /* Reopen a finished run. Everything here comes from the ledger and from disk,
  * so it works after a refresh, after a restart, and for runs driven from the
  * CLI before this view existed. */
+function batchConsoleUrl(runId) {
+  return `/api/batch/runs/${encodeURIComponent(runId)}/console`;
+}
+
+/** Plain text from a route that may legitimately have nothing to give. */
+async function fetchText(url) {
+  const response = await fetch(url);
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return response.text();
+}
+
 async function openBatchRun(run) {
   $("batch-error").hidden = true;
   resetBatchView();
-  $("batch-console-card").hidden = true; // no live console for a past run
+  $("batch-console-card").hidden = true;
   batchRunId = run.run_id;
 
   let items;
   let summary;
+  let transcript;
   try {
     items = await api(`/api/batch/runs/${encodeURIComponent(run.run_id)}/items`);
-    summary = await fetch(batchSummaryUrl(run.run_id)).then((response) => {
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return response.text();
-    });
+    summary = await fetchText(batchSummaryUrl(run.run_id));
+    // A run from before the transcript existed has none, which is not an
+    // error - the card simply stays hidden.
+    transcript = await fetchText(batchConsoleUrl(run.run_id));
   } catch (error) {
     showError($("batch-error"), error.message);
     return;
+  }
+
+  if (transcript !== null) {
+    renderText($("batch-console"), transcript);
+    $("batch-console-download").href = batchConsoleUrl(run.run_id);
+    $("batch-console-download").hidden = false;
+    $("batch-console-card").hidden = false;
   }
 
   batchTotal = items.length;

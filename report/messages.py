@@ -952,6 +952,11 @@ UI_BATCH_CONFIRM_BODY = (
     "Isto vai criar até {count} projetos no GLPI, um por raiz da fila. Esta "
     "versão não desfaz nem atualiza projetos já migrados."
 )
+UI_BATCH_NO_CONSOLE = (
+    "Esta execução não tem registro de console — ela é anterior a esse "
+    "recurso. Os relatórios por item e o resumo continuam disponíveis."
+)
+UI_BATCH_CONSOLE_DOWNLOAD = "Baixar console.txt"
 UI_BATCH_SUMMARY_HEADING = "Resumo da execução"
 # Shown when an older run is reopened from the list, so a finished run is never
 # confused with one that is still going.
@@ -1025,6 +1030,13 @@ BATCH_REPORT_WRITE_FAILED = (
 BATCH_PROGRESS_CALLBACK_FAILED = (
     "  AVISO: RDM {issue_id} foi migrado, mas o painel não pôde ser "
     "notificado: {detail}"
+)
+
+# web/jobs.py - the transcript could not be written. Bookkeeping, not the work:
+# the migration itself is unaffected, and this line still reaches the console.
+BATCH_CONSOLE_WRITE_FAILED = (
+    "AVISO: o registro da execucao nao pode ser gravado em {path}: {detail}. "
+    "A migracao continua; apenas o console deixa de ser salvo em disco."
 )
 
 # web/jobs.py - the run finished and is already in the ledger; only the copy
