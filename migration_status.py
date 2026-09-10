@@ -345,7 +345,12 @@ def _cell(actual: int | None, expected: int | None) -> str:
 # mais exige repetir a LEITURA - foi o que aconteceu em 2026-08-31, quando um
 # ajuste no template custou uma varredura inteira, e a repetição dela morreu
 # num RemoteDisconnected sem deixar nada.
-CACHE_PATH = Path("reports/status-cache.json")
+CACHE_FILENAME = "status-cache.json"
+# O padrão do CLI, relativo ao diretório de trabalho. O painel NÃO usa este
+# valor: ele grava no diretório de relatórios que lhe foi configurado, que em
+# produção fica fora da aplicação porque o diretório dela é somente-leitura.
+# Diagnosticado 2026-09-10 - ver `ensure_reports_dir` em web/jobs.py.
+CACHE_PATH = Path("reports") / CACHE_FILENAME
 
 
 @dataclass
@@ -370,9 +375,11 @@ def save_cache(
     rows: list[Row],
     scope: dict[str, tuple[str, int]] | None = None,
     imported: int | None = None,
+    path: str | Path | None = None,
 ) -> None:
-    CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CACHE_PATH.write_text(
+    target = Path(path) if path else CACHE_PATH
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
         json.dumps(
             {"saved_at": f"{datetime.now():%Y-%m-%d %H:%M:%S}",
              "scope": {k: list(v) for k, v in (scope or {}).items()} or None,
@@ -385,10 +392,11 @@ def save_cache(
     )
 
 
-def load_cache() -> Snapshot:
+def load_cache(path: str | Path | None = None) -> Snapshot:
     """A última leitura salva. Um cache anterior a esta versão não tem as
     chaves novas, e a ausência delas significa "não medido", nunca zero."""
-    payload = json.loads(CACHE_PATH.read_text(encoding="utf-8"))
+    source = Path(path) if path else CACHE_PATH
+    payload = json.loads(source.read_text(encoding="utf-8"))
     raw_scope = payload.get("scope") or None
     return Snapshot(
         rows=[Row(**item) for item in payload["rows"]],

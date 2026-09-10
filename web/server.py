@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict
+from pathlib import Path
 from urllib.parse import urlsplit
 
 from flask import Flask, Response, jsonify, render_template, request, stream_with_context
@@ -154,8 +155,12 @@ def _register_routes(app: Flask) -> None:
         existe e não parseia. Ele vale o mesmo que a ausência - um estado
         vazio explicando o que fazer - e nunca um 500.
         """
+        # The same directory the job writes into. Reading from the module
+        # default would work on a workstation and answer "no reading saved" in
+        # production forever, which is the failure mode hardest to notice.
+        path = Path(app.config["REPORTS_DIR"]) / status_tool.CACHE_FILENAME
         try:
-            return status_tool.load_cache()
+            return status_tool.load_cache(path)
         except (OSError, ValueError, KeyError, TypeError):
             return None
 

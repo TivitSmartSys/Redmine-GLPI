@@ -65,7 +65,7 @@ while the host project is alive; a project in the trash counts as orphaned.
 
 Exit codes: `0` ok, `1` failed/aborted, `2` configuration error.
 
-There is a pytest suite (`python -m pytest tests -q`, 283 tests) covering the
+There is a pytest suite (`python -m pytest tests -q`, 290 tests) covering the
 confirm gate, the summary figures, the VARCHAR(255) truncation, the client→entity
 map, the CEMIG scope rules and the root-tracker guard, the creation-date shift,
 and the attachment and
@@ -533,6 +533,24 @@ de rádio". Counting by name would file our own projects among the import.
 Measured state on 2026-09-09: **7 roots migrated** — all six CEMIG (GLPI
 1033-1038) plus RDM 20589 (GLPI 1032, tracker 14). HYDRO is **0/183**: the 171
 migrated in August were on the test instance and do not exist here.
+
+**Where the cache lives is configuration, not a constant.** Fixed 2026-09-10
+after production answered `[Errno 30] Read-only file system: 'reports'`: the job
+wrote through `migration_status.CACHE_PATH`, a module-level path relative to the
+working directory, while every other writer in `web/jobs.py` goes through
+`self._reports_dir`. Both the job and the tab's route now use the configured
+directory, and `wsgi.py` reads `MIGRATION_REPORTS_DIR` the way it already read
+`MIGRATION_DB_PATH`.
+
+**That bug hid a bigger one: Lote had the same fault.** The configured default is
+also `reports`, relative to an application directory systemd mounts read-only, so
+a batch would have died on the identical `mkdir` — after preflight and a full
+pending sweep, having migrated nothing. `JobManager.ensure_reports_dir()` is
+therefore called first in **both** workers: it creates the directory, writes a
+probe file and deletes it, and raises `ReportsDirUnwritable` naming the path and
+the variable. `_guard` treats that exception like `ApiError` — the message is
+already an instruction, and wrapping it in "Erro inesperado" buried it. The probe
+is a real write because `os.access` lies on a read-only mount.
 
 **Not measured is "?", never 0.** A cache written before this change carries no
 `scope` and no `imported` key, and the page says so rather than claiming the
