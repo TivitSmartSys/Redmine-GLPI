@@ -928,6 +928,13 @@ UI_STATUS_STAMP = "Leitura de {saved_at}"
 UI_STATUS_STAMP_NEVER = "Sem leitura salva"
 UI_STATUS_READONLY = "Somente leitura: esta aba nunca grava no GLPI nem no Redmine."
 UI_STATUS_MEASURING = "Medindo o escopo no Redmine (uma varredura por projeto)..."
+UI_REPORTS_DIR_UNWRITABLE = (
+    "Não é possível gravar no diretório de relatórios: {path}\n"
+    "Detalhe: {detail}\n"
+    "Aponte MIGRATION_REPORTS_DIR para um diretório com permissão de escrita "
+    "(por exemplo /var/lib/redmine-glpi/reports) e reinicie o serviço. "
+    "Nada foi lido nem gravado."
+)
 UI_STATUS_OPEN_TAB = "Abrir em nova aba"
 
 UI_NAV_BATCH = "Lote"

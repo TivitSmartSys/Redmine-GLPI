@@ -85,6 +85,17 @@ class JobBusy(Exception):
     """Another job is still running."""
 
 
+class ReportsDirUnwritable(Exception):
+    """Every artefact of a run lands in one directory, and it is not writable.
+
+    Diagnosed 2026-09-10 in production: the app lives in a directory systemd
+    mounts read-only, and the reports directory defaulted to a path relative to
+    it, so `mkdir` answered EROFS. It surfaced as a bare "Erro inesperado:
+    [Errno 30]" after ~100 s already spent reading Redmine, which named neither
+    the path nor the way out.
+    """
+
+
 @dataclass
 class Event:
     index: int
@@ -468,7 +479,9 @@ class JobManager:
             with contextlib.redirect_stdout(writer):
                 target(job, *args)
             writer.flush()
-        except ApiError as exc:
+        except (ApiError, ReportsDirUnwritable) as exc:
+            # Both already say what happened in PT-BR and what to do about it;
+            # wrapping either in "Erro inesperado" would bury the instruction.
             writer.flush()
             job.fail(str(exc))
         except Exception as exc:  # noqa: BLE001 - the browser must see any failure
@@ -540,6 +553,29 @@ class JobManager:
     def runs(self) -> list[dict]:
         with BatchLedger(self._db_path) as ledger:
             return ledger.runs()
+
+    def ensure_reports_dir(self) -> Path:
+        """The directory a run writes into, proven writable *now*.
+
+        Proven, not assumed: an existing directory can still refuse a write,
+        and the failure we are guarding against costs minutes of reading before
+        it surfaces. The probe is a real file because that is the only thing
+        that answers the real question - `os.access` lies on a read-only mount
+        and on anything with ACLs.
+        """
+        path = self._reports_dir
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / ".escrita-teste"
+            probe.write_text("", encoding="utf-8")
+            probe.unlink()
+        except OSError as exc:
+            raise ReportsDirUnwritable(
+                messages.UI_REPORTS_DIR_UNWRITABLE.format(
+                    path=path, detail=messages.redact(exc)
+                )
+            ) from exc
+        return path
 
     def report_path(self, run_id: str, issue_id: int) -> Path:
         return self._reports_dir / run_id / f"RDM{int(issue_id)}.txt"
@@ -660,6 +696,13 @@ class JobManager:
         print(messages.CLI_MODE_APPLY if apply_mode else messages.CLI_MODE_DRY_RUN)
         print()
 
+        # The same guard as the status job, for the same reason and one step
+        # earlier: a batch reaches its first mkdir only after preflight and
+        # after building the pending list - a bulk read of every container row
+        # plus a full Redmine sweep. `batch/runner.py` would then die on EROFS
+        # with nothing migrated and nothing explained.
+        self.ensure_reports_dir()
+
         with GlpiClient(
             settings.glpi_url, settings.glpi_user_token, settings.glpi_app_token
         ) as glpi, RedmineClient(
@@ -772,6 +815,11 @@ class JobManager:
         print(messages.UI_STATUS_READONLY)
         print()
 
+        # First, and before a single GET. The read that follows costs minutes;
+        # discovering at the end of it that the result cannot be saved wastes
+        # all of it and leaves the tab exactly as empty as before.
+        reports_dir = self.ensure_reports_dir()
+
         conn = sqlite3.connect(self._db_path)
         try:
             with GlpiClient(
@@ -786,7 +834,9 @@ class JobManager:
         finally:
             conn.close()
 
-        status_tool.save_cache(rows, scope, imported)
+        status_tool.save_cache(
+            rows, scope, imported, path=reports_dir / status_tool.CACHE_FILENAME
+        )
         snapshot = status_tool.Snapshot(
             rows=rows,
             saved_at=f"{datetime.now():%Y-%m-%d %H:%M:%S}",
@@ -798,9 +848,7 @@ class JobManager:
         # not the tab's source.
         try:
             page = status_tool.render_html(rows, snapshot.totals())
-            out = Path(status_tool.CACHE_PATH).parent / "status.html"
-            out.parent.mkdir(parents=True, exist_ok=True)
-            out.write_text(page, encoding="utf-8")
+            (reports_dir / "status.html").write_text(page, encoding="utf-8")
         except OSError as exc:
             # The reading is done and cached; a disk problem must not turn a
             # finished scan into a failed one.

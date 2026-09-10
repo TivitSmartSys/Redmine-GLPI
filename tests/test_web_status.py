@@ -41,8 +41,6 @@ REQUIRED_ENV = {
 def client(monkeypatch, tmp_path):
     for name, value in REQUIRED_ENV.items():
         monkeypatch.setenv(name, value)
-    # O cache é um caminho de módulo; cada teste recebe o seu.
-    monkeypatch.setattr(status, "CACHE_PATH", tmp_path / "status-cache.json")
     from web.server import create_app
 
     app = create_app(db_path=str(tmp_path / "b.db"), reports_dir=str(tmp_path / "reports"))
@@ -52,7 +50,15 @@ def client(monkeypatch, tmp_path):
         yield test_client
 
 
-def _write_cache(scope=None, imported=None, rows=None):
+# O cache mora no diretório de relatórios CONFIGURADO, não num caminho de
+# módulo. Ver tests/test_reports_dir.py: ler pelo padrão do módulo funciona
+# na estação de trabalho e responde "sem leitura salva" para sempre em
+# produção, onde o diretório da aplicação é somente-leitura.
+def _cache_path(tmp_path):
+    return tmp_path / "reports" / status.CACHE_FILENAME
+
+
+def _write_cache(tmp_path, scope=None, imported=None, rows=None):
     linhas = rows if rows is not None else [
         status.Row(
             redmine_id=18586,
@@ -66,14 +72,14 @@ def _write_cache(scope=None, imported=None, rows=None):
             tracker=39,
         )
     ]
-    status.save_cache(linhas, scope, imported)
+    status.save_cache(linhas, scope, imported, path=_cache_path(tmp_path))
 
 
 # -- a página --------------------------------------------------------------
 
 
-def test_a_aba_serve_a_pagina_gravada_no_cache(client):
-    _write_cache(scope={"operacao-cemig": ("tracker 39", 6)}, imported=789)
+def test_a_aba_serve_a_pagina_gravada_no_cache(client, tmp_path):
+    _write_cache(tmp_path, scope={"operacao-cemig": ("tracker 39", 6)}, imported=789)
     resposta = client.get("/api/status/page")
     assert resposta.status_code == 200
     corpo = resposta.get_data(as_text=True)
@@ -88,7 +94,9 @@ def test_sem_cache_a_aba_explica_em_vez_de_quebrar(client):
 
 
 def test_o_cache_ilegivel_nao_derruba_a_aba(client, tmp_path):
-    (tmp_path / "status-cache.json").write_text("{lixo", encoding="utf-8")
+    caminho = _cache_path(tmp_path)
+    caminho.parent.mkdir(parents=True, exist_ok=True)
+    caminho.write_text("{lixo", encoding="utf-8")
     resposta = client.get("/api/status/page")
     assert resposta.status_code == 200
     assert messages.UI_STATUS_EMPTY in resposta.get_data(as_text=True)
@@ -97,8 +105,8 @@ def test_o_cache_ilegivel_nao_derruba_a_aba(client, tmp_path):
 # -- os números do cabeçalho -----------------------------------------------
 
 
-def test_meta_traz_os_numeros_e_a_data_da_leitura(client):
-    _write_cache(scope={"hydro": ("tracker 42", 183)}, imported=789)
+def test_meta_traz_os_numeros_e_a_data_da_leitura(client, tmp_path):
+    _write_cache(tmp_path, scope={"hydro": ("tracker 42", 183)}, imported=789)
     corpo = client.get("/api/status/meta").get_json()
     assert corpo["projects"] == 1
     assert corpo["scope"] == 183
@@ -113,9 +121,9 @@ def test_meta_sem_cache_diz_que_nao_ha_leitura(client):
     assert corpo["projects"] == 0
 
 
-def test_meta_nao_inventa_zero_para_o_que_nao_foi_medido(client):
+def test_meta_nao_inventa_zero_para_o_que_nao_foi_medido(client, tmp_path):
     """Um cache antigo não tem as chaves novas; ausência não é zero."""
-    _write_cache()
+    _write_cache(tmp_path)
     corpo = client.get("/api/status/meta").get_json()
     assert corpo["imported"] is None
 

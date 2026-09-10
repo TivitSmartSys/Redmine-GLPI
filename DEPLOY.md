@@ -132,12 +132,27 @@ the CLI at all.
 | `migration.db` (repo root by default) | SQLite `migration_map` — idempotence cache + crash guard, and the source of the panel's **History** tab | Yes (see below) |
 | `report_<issue>_<timestamp>.txt` | written **into the current working directory** when `--report` is passed | Optional, but archive them |
 | `reports/<run-id>/` | per-item reports and `resumo.txt` from a batch run — written by `migrate_batch.py` **and by the panel's Lote view**, and read back by the panel's item-report links | Yes, if the links are to keep working |
+| `reports/status-cache.json` + `status.html` | the Progresso tab's saved reading — written by its "Atualizar" job and by `migration_status.py --html` | Yes; without it the tab is empty until the next scan |
 | `.env` | credentials | Yes, secret |
 | `config/*.yml` | `mapping.yml`, `status_map.yml`, `user_map.yml` — versioned, read at startup | Ships with the code |
 
 - Override the DB location with `--db /path/to/migration.db` (both `main.py` and
   `serve.py`). Put it on a persistent volume outside the deploy directory if
   deployments replace the checkout — e.g. `/var/lib/redmine-glpi/migration.db`.
+- **`MIGRATION_REPORTS_DIR` must be set, and a hardened unit will not work without
+  it.** Everything a run writes lands in one directory, and it defaults to
+  `reports` **relative to `WorkingDirectory`** — i.e. inside the application
+  directory, which §7.3's `ProtectSystem=strict` mounts read-only. `reports/` is
+  git-ignored, so a fresh checkout does not even contain it and the first write
+  is a `mkdir`. Measured on the production VM 2026-09-10: pressing *Atualizar* in
+  the Progresso tab answered `[Errno 30] Read-only file system: 'reports'`, and
+  **the Lote view had the same fault waiting** — the same directory, one
+  `mkdir` in `batch/runner.py`, reached only after preflight and a full pending
+  sweep. Point the variable at the persistent volume:
+  `MIGRATION_REPORTS_DIR=/var/lib/redmine-glpi/reports`. Since that release both
+  jobs probe the directory (create it, write a file, delete it) **before** any
+  GLPI or Redmine call and refuse with a message naming the path and this
+  variable, so the failure costs a millisecond instead of a two-minute read.
 - **Losing `migration.db` does not corrupt anything.** The authoritative dedup check
   is the `rdmfield` marker searched in GLPI itself (`check_already_migrated`); the DB
   is a cache. Losing it costs the History tab and resumability, not correctness.
@@ -295,6 +310,10 @@ WorkingDirectory=/opt/redmine-glpi/app
 Environment=PYTHONUNBUFFERED=1
 Environment=LANG=C.UTF-8
 Environment=LC_ALL=C.UTF-8
+# Both MUST point outside the application directory: ProtectSystem=strict below
+# mounts it read-only, and every report, transcript and status cache is a write.
+Environment=MIGRATION_DB_PATH=/var/lib/redmine-glpi/migration.db
+Environment=MIGRATION_REPORTS_DIR=/var/lib/redmine-glpi/reports
 # Secrets: prefer this over the on-disk .env (real env vars win, override=False).
 EnvironmentFile=/etc/redmine-glpi/env
 ExecStart=/opt/redmine-glpi/app/.venv/bin/gunicorn \
@@ -449,6 +468,9 @@ the Faturamento/container-25 path.
 - [ ] Egress to `172.178.61.88:80` and
       `smartsystems-apps.brazilsouth.cloudapp.azure.com:443` verified from the VM.
 - [ ] DB directory exists and is writable by the service user.
+- [ ] `MIGRATION_REPORTS_DIR` set to a path **outside** the application directory,
+      the directory created and owned by the service user, and covered by
+      `ReadWritePaths=`. Without it the Progresso and Lote views fail on EROFS.
 - [ ] Panel port **not** opened in the VM firewall / NSG unless option 2 with auth
       is deliberately chosen.
 - [ ] §9 steps 1–4 green.
