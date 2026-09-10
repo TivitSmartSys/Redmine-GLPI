@@ -126,6 +126,9 @@ document.querySelectorAll(".nav-item").forEach((button) => {
     if (button.dataset.view === "history") loadHistory();
     if (button.dataset.view === "config") loadConfig();
     if (button.dataset.view === "batch") loadBatchRuns();
+    // Só o carimbo. O iframe já carregou sozinho e reler a página a cada
+    // troca de aba desperdiçaria a renderização de milhares de linhas.
+    if (button.dataset.view === "status") loadStatusMeta();
   });
 });
 
@@ -316,6 +319,9 @@ function listen(jobId, handlers) {
   stream.addEventListener("batch_summary", (event) => {
     if (handlers.onBatchSummary) handlers.onBatchSummary(JSON.parse(event.data).data);
   });
+  stream.addEventListener("status_done", (event) => {
+    if (handlers.onStatusDone) handlers.onStatusDone(JSON.parse(event.data).data);
+  });
   stream.addEventListener("error", (event) => {
     // SSE also fires a nameless 'error' on transport failure; only ours has data.
     if (!event.data) return;
@@ -389,6 +395,74 @@ $("copy-report").addEventListener("click", async () => {
   await navigator.clipboard.writeText($("report").textContent);
   $("copy-report").textContent = UI.UI_REPORT_COPIED;
   setTimeout(() => ($("copy-report").textContent = UI.UI_REPORT_COPY), 1500);
+});
+
+/* ----------------------------------------------------------------- progress */
+/*
+ * A aba não monta tabela nenhuma: a página inteira vem de /api/status/page,
+ * renderizada pelo mesmo código do CLI. O que este bloco faz é a moldura -
+ * o carimbo da leitura, o botão que dispara a varredura, e recarregar o
+ * iframe quando ela termina.
+ */
+
+async function loadStatusMeta() {
+  try {
+    const meta = await api("/api/status/meta");
+    $("status-stamp").textContent = meta.saved_at
+      ? UI.UI_STATUS_STAMP.replace("{saved_at}", meta.saved_at)
+      : UI.UI_STATUS_STAMP_NEVER;
+    if (!meta.saved_at) {
+      $("status-figures").textContent = "";
+      return;
+    }
+    // "?" quando não foi medido, nunca 0: um cache anterior a esta versão não
+    // carrega o número, e inventar zero afirmaria que a instância não tem
+    // nenhum projeto alheio a esta migração.
+    const imported = meta.imported === null ? "?" : meta.imported;
+    $("status-figures").textContent =
+      `${meta.projects} / ${meta.scope} migrados · faltam ${meta.remaining}` +
+      ` · ${imported} fora desta migração` +
+      (meta.measured ? "" : " · escopo estimado");
+  } catch (error) {
+    $("status-figures").textContent = "";
+  }
+}
+
+function reloadStatusFrame() {
+  // O src é o mesmo; trocar a query força o navegador a reler em vez de
+  // devolver a página anterior do cache dele.
+  $("status-frame").src = `/api/status/page?t=${Date.now()}`;
+}
+
+$("run-status").addEventListener("click", async () => {
+  $("status-error").hidden = true;
+  $("status-console").textContent = "";
+  $("status-console-card").hidden = false;
+  $("run-status").disabled = true;
+  $("status-spinner").hidden = false;
+
+  try {
+    const { job_id } = await postJSON("/api/status/refresh", {
+      verify: $("status-verify").checked,
+    });
+    listen(job_id, {
+      console: $("status-console"),
+      onError: (detail) => showError($("status-error"), detail),
+      onDone: () => {
+        $("run-status").disabled = false;
+        $("status-spinner").hidden = true;
+        // Depois de qualquer término, inclusive falho: uma varredura que morreu
+        // no meio ainda pode ter salvo o cache, e a moldura tem de contar a
+        // verdade do disco, não a da última vez que alguém abriu a aba.
+        loadStatusMeta();
+        reloadStatusFrame();
+      },
+    });
+  } catch (error) {
+    $("run-status").disabled = false;
+    $("status-spinner").hidden = true;
+    showError($("status-error"), error.message);
+  }
 });
 
 /* -------------------------------------------------------------------- audit */

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import bisect
 import contextlib
+import sqlite3
 import threading
 import traceback
 import uuid
@@ -28,6 +29,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import main as cli
+import migration_status as status_tool
 from audit_coverage import collect_coverage
 from batch.report import render_summary
 from batch.runner import run_batch
@@ -501,6 +503,19 @@ class JobManager:
         )
         return self._register(job, self._run_batch, project, apply_mode, limit, None)
 
+    def start_status(self, verify: bool = False) -> Job:
+        """Re-read the instance for the progress tab. No write mode, by design.
+
+        It gets the batch's log ceiling because it prints one warning per
+        unreadable project and the instance holds a thousand of them.
+        """
+        job = Job(
+            kind="status",
+            label=messages.UI_NAV_STATUS,
+            max_log_events=MAX_BATCH_LOG_EVENTS,
+        )
+        return self._register(job, self._run_status, verify)
+
     def resume_batch(self, run_id: str, apply_mode: bool) -> Job:
         """Retry whatever the ledger still shows as pending or failed.
 
@@ -739,4 +754,57 @@ class JobManager:
     def _run_audit(self, job: Job, tracker: int) -> None:
         result = collect_coverage(self._settings, self._mapping, tracker, emit=print)
         job.emit("audit_result", asdict(result))
+        job.finish()
+
+    def _run_status(self, job: Job, verify: bool) -> None:
+        """A transcription of migration_status.main(), like the two above.
+
+        There is no apply_mode here and there must never be one: every call in
+        this path is a GET, on both sides. The job exists only because the read
+        is slow - 684 projects took ~45 minutes on 2026-08-31 - so it needs the
+        same console, the same one-job-at-a-time gate and the same live stream
+        the other workers have.
+
+        The scan writes exactly one thing, and it is local: the cache the tab
+        renders from, plus the same status.html the CLI produces.
+        """
+        settings = self._settings
+        print(messages.UI_STATUS_READONLY)
+        print()
+
+        conn = sqlite3.connect(self._db_path)
+        try:
+            with GlpiClient(
+                settings.glpi_url, settings.glpi_user_token, settings.glpi_app_token
+            ) as glpi, RedmineClient(
+                settings.redmine_url, settings.redmine_api_key
+            ) as redmine:
+                rows = status_tool.collect(glpi, conn, redmine if verify else None)
+                print(messages.UI_STATUS_MEASURING)
+                scope = status_tool.measure_scope(redmine)
+                imported = status_tool.measure_imported(glpi, rows)
+        finally:
+            conn.close()
+
+        status_tool.save_cache(rows, scope, imported)
+        snapshot = status_tool.Snapshot(
+            rows=rows,
+            saved_at=f"{datetime.now():%Y-%m-%d %H:%M:%S}",
+            scope=scope,
+            imported=imported,
+        )
+        # The same page the CLI writes, in the same place. The tab renders from
+        # the cache, so this file is for sharing and for the CLI's own users -
+        # not the tab's source.
+        try:
+            page = status_tool.render_html(rows, snapshot.totals())
+            out = Path(status_tool.CACHE_PATH).parent / "status.html"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(page, encoding="utf-8")
+        except OSError as exc:
+            # The reading is done and cached; a disk problem must not turn a
+            # finished scan into a failed one.
+            print(messages.redact(exc))
+
+        job.emit("status_done", {"projects": len(rows), "saved_at": snapshot.saved_at})
         job.finish()

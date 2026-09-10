@@ -622,3 +622,34 @@ select:focus-visible {
 
 /* Two actions can share a run's cell (Ver relatório + Retomar). */
 .data td .btn + .btn { margin-left: 6px; }
+
+/* ---------------------------------------------------------------- progresso */
+/*
+ * A página de progresso é um documento inteiro, com tema e largura próprios,
+ * servido por /api/status/page. Ela mora num iframe justamente para não
+ * herdar nada daqui: o mesmo HTML tem de valer na aba, no arquivo
+ * status.html e no artefato publicado.
+ */
+
+.stamp-value {
+  font-family: var(--mono, ui-monospace, monospace);
+  font-size: 13px;
+  color: var(--text);
+}
+
+.field-check { justify-content: flex-end; }
+.check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.check input { margin: 0; }
+.check span { font-size: 13px; color: var(--text-2); }
+
+.card-frame { padding: 0; overflow: hidden; }
+
+/* Alta o bastante para a tabela valer a pena, e com altura própria porque o
+   conteúdo do iframe não empurra o pai. */
+#status-frame {
+  display: block;
+  width: 100%;
+  height: min(1100px, calc(100vh - 260px));
+  border: 0;
+  background: transparent;
+}

@@ -28,6 +28,12 @@ python main.py --issue 16467 --apply --skip-notes        # no Notepad rows (stil
 python audit_coverage.py                # dropdown coverage audit, tracker 14 (read-only)
 python audit_coverage.py --tracker 42
 
+python migration_status.py                       # progress table in the terminal (read-only)
+python migration_status.py --html reports/status.html --out reports/STATUS.md
+python migration_status.py --verify              # also compares each tree against Redmine (slow)
+python migration_status.py --from-cache          # re-render the last read, touching nothing
+python migration_status.py --pending-files reports/PENDENTES.md   # attachments GLPI refused
+
 python reset_migration.py --issue 16467              # diagnose only — deletes nothing
 python reset_migration.py --issue 16467 --apply      # forget the migration, after "sim"
 python reset_migration.py --issue 16467 --local-only # clear the SQLite map, leave GLPI alone
@@ -59,7 +65,7 @@ while the host project is alive; a project in the trash counts as orphaned.
 
 Exit codes: `0` ok, `1` failed/aborted, `2` configuration error.
 
-There is a pytest suite (`python -m pytest tests -q`, 264 tests) covering the
+There is a pytest suite (`python -m pytest tests -q`, 283 tests) covering the
 confirm gate, the summary figures, the VARCHAR(255) truncation, the client→entity
 map, the CEMIG scope rules and the root-tracker guard, the creation-date shift,
 and the attachment and
@@ -488,6 +494,54 @@ Per-item reports land in `reports/<run-id>/RDM<id>.txt` and `resumo.txt` beside
 them — the same paths `migrate_batch.py` writes, so a run driven from the panel
 leaves the same record on disk as one driven from the CLI. The report route
 validates `run_id` against the ledger before it names a directory.
+
+### The Progresso tab — one renderer, three destinations
+
+Added 2026-09-09. `migration_status.py` already produced the whole page; what
+it lacked was a way in. The tab is a frame around it, not a second
+implementation: `/api/status/page` calls the same `render_html()` the CLI
+calls, so the tab, `reports/status.html` and anything published from it can
+never disagree. That is what the `<iframe>` buys, and it is the whole reason
+the table is not rebuilt in `app.js`.
+
+**The tab reads the cache, never the instance.** A scan of 684 projects took
+~45 minutes on 2026-08-31; opening a tab cannot cost that. `/api/status/refresh`
+is what re-reads, as an ordinary job — same console, same stream, and the same
+one-job-at-a-time gate, so a scan cannot race a batch for the GLPI session.
+There is **no apply mode on this path and there must never be one**: every call
+`_run_status` makes is a GET, on both sides.
+
+**The denominator is measured, not transcribed.** `SCOPE_ROOTS` is now a
+last-resort fallback. Measured 2026-09-09, nine days after it was written: the
+real counts were 6 / **183** / **5460** against the constant's 6 / 171 / 5451 —
+HYDRO alone had grown by 12 roots. A percentage over a transcribed total is
+wrong the day after it is written and gets worse. `measure_scope()` costs ~100 s
+(Telecom is 55 pages of 100 issues) against a read measured in hours.
+
+**Report what the instance holds, not only what we wrote.** Production holds
+1028 projects, **789 of them named "RDM &lt;n&gt;" with no marker at all** — the
+2026-06-06 import, which is not this tool's work and, unlike the test instance,
+was never purged here. The page says 7 while the GLPI UI shows ~800 RDM-looking
+projects, so the number rides in its own tile and its own sentence. Without it
+the panel reads as broken, which is the opposite of what it is for.
+
+`count_imported()` subtracts marker hosts rather than matching names alone, and
+that is not defensive coding: real Redmine subjects cite other tickets, and RDM
+18557 — migrated by this tool — is called "RDM 18291 - Cascavel | 3 instalações
+de rádio". Counting by name would file our own projects among the import.
+
+Measured state on 2026-09-09: **7 roots migrated** — all six CEMIG (GLPI
+1033-1038) plus RDM 20589 (GLPI 1032, tracker 14). HYDRO is **0/183**: the 171
+migrated in August were on the test instance and do not exist here.
+
+**Not measured is "?", never 0.** A cache written before this change carries no
+`scope` and no `imported` key, and the page says so rather than claiming the
+instance holds nothing — the same rule as the table's "sem mapa" column.
+
+The Lote view now defaults its limit to **500**, with a hint saying so. It is a
+recommendation, not a ceiling: the server still accepts any number, and pinning
+one in `serve.py` would make an operational choice unchangeable without a code
+edit.
 
 The **Configuração** tab is read-only and shows, since the same date, the
 instance it is pointed at (hosts only), `entity_map.yml`, and the operational

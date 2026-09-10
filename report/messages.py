@@ -909,6 +909,27 @@ UI_CONFIG_BATCH_PROJECTS = "Projetos do Redmine (migração em lote)"
 UI_CONFIG_RELOAD = "Recarregar"
 UI_CONFIG_ERROR = "Não foi possível ler a configuração: {detail}"
 
+UI_NAV_STATUS = "Progresso"
+UI_STATUS_INTRO = (
+    "Quanto da migração já está no GLPI, projeto a projeto, com o id que cada "
+    "raiz do Redmine recebeu. A página abre a partir da última leitura salva; "
+    "atualizar relê o GLPI e o Redmine e pode levar horas."
+)
+UI_STATUS_EMPTY = (
+    "Nenhuma leitura salva ainda. Use “Atualizar” para ler o GLPI e o Redmine "
+    "e montar o painel pela primeira vez."
+)
+UI_STATUS_REFRESH = "Atualizar"
+UI_STATUS_VERIFY_LABEL = "Conferir cada árvore contra o Redmine"
+UI_STATUS_VERIFY_HINT = (
+    "Compara tarefas, notas e arquivos com a origem. Um GET por projeto migrado."
+)
+UI_STATUS_STAMP = "Leitura de {saved_at}"
+UI_STATUS_STAMP_NEVER = "Sem leitura salva"
+UI_STATUS_READONLY = "Somente leitura: esta aba nunca grava no GLPI nem no Redmine."
+UI_STATUS_MEASURING = "Medindo o escopo no Redmine (uma varredura por projeto)..."
+UI_STATUS_OPEN_TAB = "Abrir em nova aba"
+
 UI_NAV_BATCH = "Lote"
 UI_BATCH_INTRO = (
     "Migra todas as raízes pendentes de um projeto do Redmine, uma a uma, pelo "
@@ -919,7 +940,13 @@ UI_BATCH_PROJECT_LABEL = "Projeto do Redmine"
 UI_BATCH_PROJECT_INVALID = "Selecione um projeto do Redmine válido."
 UI_BATCH_LIMIT_LABEL = "Máximo de itens (opcional)"
 UI_BATCH_LIMIT_PLACEHOLDER = "todos"
-UI_BATCH_LIMIT_HINT = "Deixe vazio para processar toda a fila."
+# 500 é decisão operacional, não limite técnico: uma partida supervisionável,
+# que cabe numa sessão de trabalho e deixa um relatório que dá para ler. O
+# servidor continua aceitando qualquer número - quem escolhe é o operador.
+UI_BATCH_LIMIT_DEFAULT = 500
+UI_BATCH_LIMIT_HINT = (
+    "Recomendado: 500 projetos por execução. Deixe vazio para processar toda a fila."
+)
 UI_BATCH_LIMIT_INVALID = "O máximo de itens deve ser um número maior que zero."
 UI_BATCH_RUN = "Simular lote"
 UI_BATCH_RUN_APPLY = "Analisar e gravar lote"

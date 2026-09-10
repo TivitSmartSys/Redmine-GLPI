@@ -37,6 +37,7 @@
   <nav class="sidebar" aria-label="Seções">
     <button type="button" class="nav-item is-active" data-view="migration">{{ ui.UI_NAV_MIGRATION }}</button>
     <button type="button" class="nav-item" data-view="batch">{{ ui.UI_NAV_BATCH }}</button>
+    <button type="button" class="nav-item" data-view="status">{{ ui.UI_NAV_STATUS }}</button>
     <button type="button" class="nav-item" data-view="audit">{{ ui.UI_NAV_AUDIT }}</button>
     <button type="button" class="nav-item" data-view="history">{{ ui.UI_NAV_HISTORY }}</button>
     <button type="button" class="nav-item" data-view="config">{{ ui.UI_NAV_CONFIG }}</button>
@@ -107,6 +108,7 @@
         <div class="field">
           <label for="batch-limit">{{ ui.UI_BATCH_LIMIT_LABEL }}</label>
           <input type="number" id="batch-limit" inputmode="numeric" min="1"
+                 value="{{ ui.UI_BATCH_LIMIT_DEFAULT }}"
                  placeholder="{{ ui.UI_BATCH_LIMIT_PLACEHOLDER }}" autocomplete="off">
           <small class="hint">{{ ui.UI_BATCH_LIMIT_HINT }}</small>
         </div>
@@ -191,6 +193,50 @@
           <p class="empty" id="batch-runs-empty" hidden>{{ ui.UI_BATCH_NO_RUNS }}</p>
         </div>
       </section>
+    </section>
+
+    <!-- ============================ PROGRESSO =========================== -->
+    <!--
+      A tabela não é remontada aqui. Ela vem inteira de /api/status/page, que
+      chama o mesmo render_html() do CLI - assim a aba, o arquivo status.html
+      e o artefato publicado nunca divergem. O iframe é o preço disso: a
+      página traz o próprio tema e a própria largura, e não deve herdar o CSS
+      do painel.
+    -->
+    <section class="view" id="view-status">
+      <p class="intro">{{ ui.UI_STATUS_INTRO }}</p>
+
+      <div class="card card-run">
+        <div class="field">
+          <span class="label">{{ ui.UI_STATUS_STAMP_NEVER }}</span>
+          <strong id="status-stamp" class="stamp-value">—</strong>
+          <small class="hint" id="status-figures"></small>
+        </div>
+        <div class="field field-check">
+          <label class="check">
+            <input type="checkbox" id="status-verify">
+            <span>{{ ui.UI_STATUS_VERIFY_LABEL }}</span>
+          </label>
+          <small class="hint">{{ ui.UI_STATUS_VERIFY_HINT }}</small>
+        </div>
+        <button type="button" class="btn btn-primary" id="run-status">{{ ui.UI_STATUS_REFRESH }}</button>
+        <a class="btn btn-ghost" id="status-open" href="/api/status/page" target="_blank"
+           rel="noopener">{{ ui.UI_STATUS_OPEN_TAB }}</a>
+      </div>
+
+      <p class="notice" id="status-error" hidden></p>
+
+      <div class="card card-console" id="status-console-card" hidden>
+        <div class="card-head">
+          <h2>{{ ui.UI_CONSOLE_HEADING }}</h2>
+          <span class="spinner" id="status-spinner" hidden aria-hidden="true"></span>
+        </div>
+        <pre class="console" id="status-console" tabindex="0"></pre>
+      </div>
+
+      <div class="card card-frame">
+        <iframe id="status-frame" src="/api/status/page" title="{{ ui.UI_NAV_STATUS }}"></iframe>
+      </div>
     </section>
 
     <!-- ============================ AUDITORIA =========================== -->
