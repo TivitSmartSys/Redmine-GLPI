@@ -66,3 +66,72 @@ def test_without_full_range_the_exact_match_would_be_missed():
                               {"searchText[rdmfield]": "1240"}, full_range=False)
 
     assert all(row["id"] != 999 for row in truncated)
+
+
+# -- the same trap, on the two reads that were left behind ------------------
+#
+# Found by the audit of 2026-09-10. find_by_rdmfield was fixed above and given
+# the tests above; its twins were not, although the shape is identical and the
+# reasoning transfers word for word.
+#
+# find_document_by_marker is the one that costs real data. searchText[comment]
+# is the same LIKE '%value%' match, so "rdmattachment:293" also matches every
+# document whose attachment id merely CONTAINS 293 - 180 of them in the id
+# range 1..40000, measured. Truncated to 15 rows the exact document is not
+# found, dedup answers "not migrated", and the file is uploaded a SECOND time.
+# That is precisely the guarantee CLAUDE.md claims for attachments: losing
+# migration.db must not be able to duplicate a file.
+#
+# Redmine attachment ids span the whole sequence from 2011 onward, so the low,
+# short ids are not hypothetical - they belong to the oldest issues in the
+# Telecom backlog, which is the bulk of the work still to migrate.
+
+
+def test_document_marker_search_requests_full_range():
+    glpi = TruncatingRecorder([])
+
+    glpi.find_document_by_marker(293)
+
+    assert glpi.seen_params[0]["range"] == SEARCH_FETCH_RANGE
+
+
+def test_document_marker_beyond_the_first_15_substring_hits_is_still_found():
+    # 19 substring-only hits ("rdmattachment:2930".."rdmattachment:29318"),
+    # then the exact marker last, at position 20.
+    rows = [
+        {"id": i, "comment": f"rdmattachment:293{i}\nOrigem: RDM 1"}
+        for i in range(19)
+    ]
+    rows.append({"id": 999, "comment": "rdmattachment:293\nOrigem: RDM 1"})
+    glpi = TruncatingRecorder(rows)
+
+    result = glpi.find_document_by_marker(293)
+
+    assert [row["id"] for row in result] == [999]
+
+
+def test_container_row_search_requests_full_range():
+    """get_container_rows carries the same omission.
+
+    searchText[items_id] is a substring match too, so a project id of 127 finds
+    1270..1279 and 11270. It is currently masked by arithmetic rather than by
+    design - every project id on this instance is four digits, so a five-digit
+    collision does not exist yet - which is the least durable kind of safety.
+    """
+    glpi = TruncatingRecorder([])
+
+    glpi.get_container_rows("PluginFieldsProjectcamposadicionaisprojeto", 127)
+
+    assert glpi.seen_params[0]["range"] == SEARCH_FETCH_RANGE
+
+
+def test_container_row_beyond_the_first_15_substring_hits_is_still_found():
+    rows = [{"id": i, "items_id": f"127{i}"} for i in range(19)]
+    rows.append({"id": 999, "items_id": "127"})
+    glpi = TruncatingRecorder(rows)
+
+    result = glpi.get_container_rows(
+        "PluginFieldsProjectcamposadicionaisprojeto", 127
+    )
+
+    assert [row["id"] for row in result] == [999]

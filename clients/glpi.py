@@ -395,8 +395,20 @@ class GlpiClient:
 
         searchText in GLPI is a LIKE '%value%' match, so results are filtered
         for an exact items_id here.
+
+        `full_range` for the reason on _search: the substring match means a
+        project id of 127 also finds 1270..1279, and without a range GLPI
+        answers with the first 15 rows only. Added 2026-09-10 - until then this
+        was safe by arithmetic rather than by design (no five-digit project id
+        exists yet on this instance), and write_additional_fields_row would
+        have taken its INSERT branch on a miss, giving the project a SECOND
+        container row and leaving the rdmfield marker on the wrong one.
         """
-        rows = self._search(itemtype, {"searchText[items_id]": str(int(items_id))})
+        rows = self._search(
+            itemtype,
+            {"searchText[items_id]": str(int(items_id))},
+            full_range=True,
+        )
         return [row for row in rows if str(row.get("items_id")) == str(int(items_id))]
 
     def project_tasks(self, project_id: int) -> list[dict]:
@@ -598,13 +610,29 @@ class GlpiClient:
     def find_document_by_marker(self, attachment_id: int) -> list[dict]:
         """Documents carrying the migration marker for one Redmine attachment.
 
-        The document twin of find_by_rdmfield, and it needs the same defence:
+        The document twin of find_by_rdmfield, and it needs the same defence
+        TWICE over - the exact-marker filter, and the range.
+
         searchText is a LIKE '%value%' match, so `rdmattachment:2931` would also
         match `rdmattachment:29314`. Results are filtered for an exact marker,
         delimited by the line break the comment is built with.
+
+        `full_range` was missing here until 2026-09-10 while its twin had it,
+        and this is the read where the omission costs real data. Measured: a
+        three-digit attachment id has 180 substring collisions in the id range
+        1..40000, so the exact document sits far outside the 15 rows GLPI
+        returns without a range. The lookup then answers "no such document",
+        `_migrate_one_attachment` falls through to the upload branch and the
+        file is stored a SECOND time - which is exactly the guarantee this
+        marker exists to provide: losing migration.db must not duplicate files.
+        Redmine's attachment ids run from 2011 onward, so the short, low ids
+        belong to the oldest issues of the Telecom backlog, not to a
+        hypothetical.
         """
         marker = f"{DOCUMENT_MARKER_PREFIX}{int(attachment_id)}"
-        rows = self._search(ITEMTYPE_DOCUMENT, {"searchText[comment]": marker})
+        rows = self._search(
+            ITEMTYPE_DOCUMENT, {"searchText[comment]": marker}, full_range=True
+        )
         return [row for row in rows if _has_exact_marker(row.get("comment"), marker)]
 
     def upload_document(

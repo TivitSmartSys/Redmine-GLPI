@@ -127,6 +127,33 @@ class ProjectPlan:
             records.extend(item.result.records)
         return records
 
+    def outcome_counts(self) -> tuple[int, dict]:
+        """(total, {outcome: count}) over all_records - the section-7 buckets.
+
+        The ONE place this arithmetic lives, since 2026-09-10. Report section 7
+        and the web panel's summary cards both read it; before that each had
+        its own copy of the same loop, and the report's copy was the only one
+        that checked its own sum. The cards could therefore have drifted
+        silently while the text below them stayed correct.
+
+        A record whose outcome is not one of the four keys is counted in
+        `total` and in no bucket, which is deliberate: the sum then fails to
+        match and both readers say so out loud. NEVER_WRITE is the outcome that
+        must never appear here - those records live on plan.never_write, which
+        all_records() excludes.
+        """
+        counts = {
+            Outcome.WRITTEN: 0,
+            Outcome.EMPTY_SOURCE: 0,
+            Outcome.NO_COUNTERPART: 0,
+            Outcome.UNRESOLVED: 0,
+        }
+        records = self.all_records()
+        for record in records:
+            if record.outcome in counts:
+                counts[record.outcome] += 1
+        return len(records), counts
+
 
 class Reporter:
     def __init__(self, plan: ProjectPlan, apply_mode: bool = False):
@@ -484,18 +511,7 @@ class Reporter:
 
     def _section_integrity(self) -> tuple[bool, dict[str, int]]:
         """Prove arithmetically that no source field was dropped."""
-        records = self._plan.all_records()
-        counts = {
-            Outcome.WRITTEN: 0,
-            Outcome.EMPTY_SOURCE: 0,
-            Outcome.NO_COUNTERPART: 0,
-            Outcome.UNRESOLVED: 0,
-        }
-        for record in records:
-            if record.outcome in counts:
-                counts[record.outcome] += 1
-
-        total = len(records)
+        total, counts = self._plan.outcome_counts()
         parts_sum = sum(counts.values())
 
         self._section(messages.REPORT_SECTION_7)

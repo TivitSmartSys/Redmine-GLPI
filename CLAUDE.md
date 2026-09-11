@@ -5,11 +5,46 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 A one-shot CLI that migrates a single Redmine issue tree into a GLPI project
-(project + tasks + two Fields-plugin containers). The authoritative
+(project + tasks + two Fields-plugin containers), plus a batch runner and a web
+panel over the same code path. The authoritative
 specification is [INSTRUKCJA_Redmine_do_GLPI_2.md](INSTRUKCJA_Redmine_do_GLPI_2.md)
 (Polish) — treat it as the source of truth; most modules cite it by section
 number (`spec 6.5`, `spec 9.2`). [PROMPT_dla_Claude_Code.md](PROMPT_dla_Claude_Code.md)
 holds the overriding scope decisions.
+
+## Which instance this is — READ THIS FIRST
+
+`.env` points at **production** (`smartsystemsitsm`) and has since 2026-09-03.
+Almost every number written in this file between August 2026 and that date was
+measured on the **test** instance, which was a different GLPI with different
+ids. Where the two disagree, `config/settings.py` is right and carries the dated
+measurement; this file is the one that went stale, and the entries below are the
+ones that bit.
+
+| | test instance | **production** |
+|---|---|---|
+| project container (`camposadicionaisprojeto`, dom, Project) | 15 | **17** |
+| Faturamento container (`abadefaturamento`, tab, ProjectTask) | 26 | **18** |
+| `document_max_size` reported by `getGlpiConfig` | 50 MB | **10 MB** |
+| projects on the instance | 1274 | 1028 |
+| roots migrated by this tool | 171 + others | **7** |
+
+**Container 15 exists on production and belongs to someone else** —
+`adicionaltarefamp`, a dom container on ProjectTask — and container 26 does not
+exist at all. So the old ids did not fail loudly; they would have read and
+written real rows of the wrong container. Prose below that says "container 15"
+or "container 26" is describing the test instance at the date given, and the
+constants to trust are `CONTAINER_ID_ADDITIONAL_FIELDS` and
+`CONTAINER_ID_FATURAMENTO`. Since 2026-09-10 every user-facing string
+interpolates those constants rather than a transcribed number, pinned by
+`tests/test_container_labels.py`.
+
+`DEFAULT_ENTITY_ID` is 75 and that is correct here: verified live 2026-09-10 to
+resolve to `TIVIT > SMART SYSTEMS`. It was not touched by the production refit,
+so it was worth checking; it survived the check.
+
+**There is no phase 0 on production.** See the batch section — `purge_import.py`
+is retired and refuses to run.
 
 ## Commands
 
@@ -38,20 +73,23 @@ python reset_migration.py --issue 16467              # diagnose only — deletes
 python reset_migration.py --issue 16467 --apply      # forget the migration, after "sim"
 python reset_migration.py --issue 16467 --local-only # clear the SQLite map, leave GLPI alone
 
-python purge_import.py                    # phase 0 dry-run — lists the 2026-06-06 import, writes nothing
-python purge_import.py --apply            # purges it, after an interactive "sim" confirmation
-python purge_import.py --apply --yes      # non-interactive confirmation (pipelines)
-python purge_import.py --report purge.txt # dry-run + save the plan report
+python serve.py                           # web panel on http://127.0.0.1:8000 (opens a browser)
+python serve.py --port 8123 --no-browser  # same, without the browser
+python serve.py --db path\to\other.db     # override the SQLite map
 
-python migrate_batch.py --project operacao-cemig             # phase 1 dry-run, one Redmine project at a time
+python migrate_batch.py --project operacao-cemig             # dry-run, one Redmine project at a time
 python migrate_batch.py --project hydro --apply --limit 20    # writes, first 20 pending roots only
 python migrate_batch.py --project projetos-telecom --apply --yes  # non-interactive confirmation
 python migrate_batch.py --project hydro --resume <run-id>     # retomada: retries pending + failed
 python migrate_batch.py --project hydro --db path\to\other.db # override the SQLite ledger
 python migrate_batch.py --project hydro --reports out\dir     # override the reports directory (default: reports)
-python migrate_batch.py --project hydro --purge-record purge.txt --apply  # fold the phase 0 record into resumo.txt
 python migrate_batch.py --project hydro --apply --skip-attachments --skip-notes  # same flags main.py takes, per item
 ```
+
+`purge_import.py` still exists and is **retired** — it prints why and exits 2
+whatever flags it is given. Do not reach for it; see the batch section.
+`--purge-record` on `migrate_batch.py` is the vestige of that phase and now has
+nothing to fold in.
 
 `reset_migration.py` exists because deleting the project in GLPI does **not**
 unblock a re-run: the container-15 row carrying `rdmfield` outlives its project,
@@ -65,21 +103,31 @@ while the host project is alive; a project in the trash counts as orphaned.
 
 Exit codes: `0` ok, `1` failed/aborted, `2` configuration error.
 
-There is a pytest suite (`python -m pytest tests -q`, 290 tests) covering the
+There is a pytest suite (`python -m pytest tests -q`, **322 tests**) covering the
 confirm gate, the summary figures, the VARCHAR(255) truncation, the client→entity
 map, the CEMIG scope rules and the root-tracker guard, the creation-date shift,
 and the attachment and
 note phases — host assignment, each section's own arithmetic, the line-anchored
 markers and apply degradation. There is no linter or build step.
+
+The 2026-09-10 audit added five files, each pinning a defect it found:
+`test_purge_disabled.py` (the retired phase 0 cannot reach the network),
+`test_glpi_search_range.py` (extended: the document and container-row reads ask
+for a range, like the marker read always did), `test_faturamento_dedup.py` (an
+invoice reachable by both paths is planned once), `test_cli_error_routing.py`
+(a refusal mid-run is not reported as a credentials problem), and
+`test_container_labels.py` (no user-facing string carries a transcribed
+container number).
+
 Real
 verification is the dry-run against the test list in spec section 1a — notably
 `20238` (minimal), `18620` (out-of-scope child rule, tracker 41), and `20156`
 (a tracker-18 child, in scope since 2026-08-06).
 
-Most of that list is now migrated, so dedup stops the dry-run before it plans
-anything. Pick a fresh issue when you need to exercise a path end to end:
-`20438`, `20280`, `20380` and `20441` each have a tracker-15 partner by
-relation, and `19403` has seven tracker-18 children.
+Most of that list was migrated **on the test instance** and does not exist on
+production, so the dry-run runs them end to end again. `20438` and `20441` each
+have a tracker-15 partner by relation and were the ones re-verified live on
+2026-09-10; `19403` has seven tracker-18 children.
 
 Credentials come from `.env` (copy `.env.example`). `REDMINE_URL` is a bare host;
 `apirest.php` belongs to `GLPI_URL` only — `load_settings()` rejects that mix-up.
@@ -111,7 +159,16 @@ Module roles:
   returning both a payload and a `FieldRecord` per field.
 - [transform/faturamento.py](transform/faturamento.py) — finds tracker-15
   issues linked to the root via relations. The other path (a tracker-15
-  descendant) is handled by the tree walk.
+  descendant) is handled by the tree walk. **The two paths can reach the same
+  issue**, and `build_project_plan` now passes the tree's ids as
+  `already_planned` so it is not migrated twice (2026-09-10). Left unguarded,
+  the second copy reused the first copy's ProjectTask through the local map and
+  then wrote a *second* container row on it — `create_faturamento_row` has no
+  update branch and that container has no dedup marker, so nothing downstream
+  could have caught it. Measured on 150 Telecom roots the same day: none has a
+  tracker-15 child at all, so this was latent rather than active. The sibling
+  guard had been in place for files since attachments landed, which is what
+  made the gap visible.
 - [transform/attachments.py](transform/attachments.py) and
   [transform/notes.py](transform/notes.py) — plan the files and the notes. Both
   pure. `notes.py` imports `host_for`/`item_label` from `attachments.py` rather
@@ -167,19 +224,39 @@ Verified live 2026-08-10 (GLPI 11.0.6) by uploading one file to a throwaway
 project/task and purging it: `POST /Document` over the legacy `apirest.php`
 works, and so does a `Document_Item` link whose `itemtype` is `ProjectTask` —
 which had zero rows on the instance, so it was genuinely untested. `document`
-right is 255, `document_max_size` is 50 MB, and `glpi_documenttypes` has 76 rows
-including `.xlsb`/`.msg`/`.eml`/`.ods`, all four of which RDM 16467 needs.
+right is 255, `document_max_size` was 50 MB **on the test instance**, and
+`glpi_documenttypes` has 76 rows including `.xlsb`/`.msg`/`.eml`/`.ods`, all four
+of which RDM 16467 needs. Production reads `document_max_size = 10` (re-measured
+2026-09-03), which is what `DOCUMENT_MAX_SIZE_MB` now carries.
 
-That 50 MB is GLPI's own setting and **not** the effective limit — PHP's
-`post_max_size` is lower and rejects the upload after GLPI has accepted it. See
-the `post_max_size` trap below before trusting the number.
+Neither number is the effective limit — PHP's `post_max_size` is lower still and
+rejects the upload after GLPI has accepted it. See the `post_max_size` trap below
+before trusting either.
 
 **Documents have a dedup marker; tasks still do not.** `Document.comment` carries
 `rdmattachment:<attachment id>` on its own first line, and
 `find_document_by_marker` is the document twin of `find_by_rdmfield`. GLPI is the
 authority, `migration_map` (itemtype `Document`, `redmine_id` = the *attachment*
 id) is the crash guard. Losing `migration.db` therefore cannot duplicate files,
-which is exactly the exposure containers 16 and 26 still have.
+which is exactly the exposure the ProjectTask containers still have.
+
+**That guarantee was not actually held until 2026-09-10, and the twin is where
+it broke.** `find_by_rdmfield` asks for a `range`; `find_document_by_marker` did
+not, so it read the first 15 rows GLPI returns by default. The comment search is
+a substring match like every other one here, and a short attachment id collides
+heavily — `rdmattachment:293` matches 180 documents in the id range 1..40000.
+The exact row then sits outside the window, the lookup answers "no such
+document", `_migrate_one_attachment` falls through to the upload branch and the
+file is stored a **second** time. Redmine's attachment ids run from 2011
+onward, so the short low ids belong to the oldest issues of the Telecom backlog,
+which is most of the work still to do. `get_container_rows` carried the same
+omission and was fixed with it — there it was safe by arithmetic rather than by
+design, since no five-digit project id exists on this instance yet.
+
+The lesson generalises: **when a read is given an exact-match filter because
+searchText is a substring match, it needs `full_range=True` in the same breath.**
+The filter and the range are one defence, not two, and the codebase had the
+reasoning written out at length on one call site while its twin went without.
 
 Proven end to end on 2026-08-10 with RDM 16467 → project 1277: 23 files
 uploaded (19 on the project, 3 on the Compras task 14107, 1 on the Faturamento
@@ -590,53 +667,60 @@ Watch the field name on `ProjectPlan`: `notes` is the apply-time message log
 (`list[str]`, appended to the end of the report) and predates this phase. The
 planned notes live on **`notes_planned`**.
 
-### Batch migration — `purge_import.py` then `migrate_batch.py`
+**Section 7's arithmetic lives in exactly one place — `ProjectPlan.outcome_counts()`.**
+The web panel's summary cards used to carry their own copy of the same loop, so
+the cards and the text underneath them could have drifted apart, and only the
+report's copy checked its own sum. Merged 2026-09-10; `test_summary.py` pins all
+five numbers against the rendered report, not the three it pinned before. The
+"count only known outcomes, compare against `len(records)`" shape is deliberate
+and survives the merge: a record in no bucket makes the sum fail out loud, which
+is how a `NEVER_WRITE` record that leaked into `all_records()` would announce
+itself instead of quietly shrinking the total.
+
+### Batch migration — `migrate_batch.py`
 
 Opened 2026-08-27. Until this point the pipeline moved one issue at a time
 (`python main.py --issue N`); 5627 in-scope roots remained. Design is in
-`docs/superpowers/specs/2026-08-27-batch-migration-design.md`.
+`docs/superpowers/specs/2026-08-27-batch-migration-design.md`, which still
+describes the two-phase shape this section no longer has.
 
-**The measured finding that motivates both phases.** GLPI holds 1274 projects,
-of which **1253 were created on 2026-06-06** by a bulk import that is not this
-tool. Comparing each project's `rdmfield` marker against the "RDM &lt;n&gt;"
-number in its own name: **698 contradict it, 5 match, 139 carry no RDM number
-at all**. Marker `16950` sits on **13** unrelated live projects, `17018` on
-**5** — every one of those projects has an unrelated name. Only 909 of the
-1253 even carry a container-15 row, so **344 are invisible to dedup entirely**
-(no marker to find). A 40-project sample of the June import holds **0 notes
-and 0 linked documents** — they are empty shells, not partial migrations.
+**Phase 0 is gone. `purge_import.py` is retired and refuses to run.** Closed
+decision 2026-09-10, taken by the manager after the audit of that day measured
+what the tool would do against production. The tool was correct for the
+instance it was written for and is dangerous here, which is the whole point:
 
-**This breaks a batch in both directions at once.** ~660 issues would be
-skipped, each because its own real marker happens to sit on a project that
-belongs to a different issue. And the 1253 June shells would be migrated a
-second time, because their true Redmine issue cannot be found by a marker
-that points somewhere else. Repairing the markers from the project names was
-considered and rejected: it would recover some, but the shells still have no
-tasks, no notes and no documents, so a repaired marker would read as a
-complete migration and hide the gap instead of closing it.
+- it was calibrated on the **test** instance, where 1253 of 1274 projects came
+  from a 2026-06-06 bulk import that had written `rdmfield` misaligned — 698
+  markers contradicting the RDM number in their own project's name, one marker
+  sitting on 13 unrelated projects, 344 projects with no marker at all. That
+  genuinely broke dedup in both directions, and phase 0 genuinely fixed it;
+- **production is not that instance.** A dry-run there selected **1004
+  projects** for `force_purge`, and **not one of them carries an `rdmfield`
+  marker** — so there is no poisoned dedup here to repair. **236** of the 1004
+  are not even named "RDM &lt;n&gt;" ("Manutenção Preventiva ENEL RJ -
+  SUBESTAÇÕES - Ciclo 2024/2025"): ordinary customer projects that predate this
+  tool;
+- the safety net was calibrated too. `KEEP_PROJECT_IDS` holds ids 1286–1298,
+  which **do not exist on production** — the highest project id is 1005 — so
+  the `KeepListViolation` guard could never fire and the printed "Projetos
+  preservados: 9" was reporting protection it was not providing.
 
-**Phase 0, `purge_import.py`**, removes the poisoned import so `rdmfield`
-becomes trustworthy again. The target is selected **positively**, never as
-"everything else": every project with `date_creation` on 2026-06-06, plus 12
-explicit test ids. **1265 of 1274 projects are removed.** A hard-coded keep
-list of 9 projects is checked first, and the tool refuses to start at all if
-target selection would touch any of them — each of the 9 was verified
-individually to carry a marker pointing at a real in-scope root whose subject
-matches the project name. Deletion uses `force_purge`, not the trash: a
-trashed project would still answer `rdmfield` searches and keep poisoning
-dedup.
+The refusal is the first statement in `main()`, before the arguments are parsed
+and before `load_settings`, because an instruction in a document is not a
+control — this file used to present phase 0 as step one of the batch workflow.
+The planning functions below it are deliberately left intact and still tested:
+the selection rule, and the inverted deletion order (container row first,
+project last, because a plugin container row outlives its host project), are
+expensive evidence and the design doc refers to them. Nothing can reach the
+network through them. See `tests/test_purge_disabled.py`.
 
-**The deletion order is inverted on purpose: the container-15 row goes first,
-the project last.** The obvious order — project, then its container row — is
-wrong, because a plugin container row outlives its host project (the same
-fact `reset_migration.py` exists to work around). A failure partway through
-after the project is already gone would strand exactly the marker this phase
-is trying to remove. Deleting the container row first means a failure leaves
-a live project with no marker, which is recoverable. The final step re-reads
-the project count and the container-15 row count; the cleanup is not
-considered done until that read confirms nothing but the 9 kept projects
-remain — that read is what proves dedup is no longer poisoned, not the delete
-calls themselves.
+**Dedup on production needs no repair, but it does need the markers to be
+readable.** 789 of the 1028 projects are named "RDM &lt;n&gt;" and carry no
+marker at all, which is invisible to `find_by_rdmfield` and therefore harmless
+to a batch — those roots will simply be migrated, and the operator has to know
+that the resulting project is a second GLPI project for that RDM number. That
+is a business question about the pre-existing data, not a bug in this tool, and
+it is the number report section 9 of the Progresso tab exists to keep visible.
 
 **Phase 1, `migrate_batch.py`**, runs the actual migration in supervised,
 resumable batches, one Redmine project at a time. Each item **is** the
@@ -660,9 +744,18 @@ mapping table would make a failed attempt look like a real mapping.
 `--resume <run-id>` retries whatever the ledger still shows as pending or
 failed. Each item writes its own report via the existing `Reporter`
 (`reports/<run>/RDM<id>.txt`), and one `resumo.txt` sits above them with the
-outcome counts and every failure's reason written out in full — it also
-folds in the Phase 0 purge record when `--purge-record` is given, so the
-final report accounts for what was deleted as well as what was written.
+outcome counts and every failure's reason written out in full. `--purge-record`
+still accepts a file and folds it in, but phase 0 is retired so nothing produces
+one any more.
+
+**A failed item writes its report too**, since 2026-09-10. It used to be written
+only after the ledger was marked `ok`, which left the one item an operator
+actually needs to read as the only one without a report. The rule is unchanged
+where it matters: the write happens *after* the ledger in both branches and its
+`OSError` is swallowed, because an `OSError` caught by the loop's broad `except`
+would mark an item `failed` whose migration had already been committed to GLPI —
+and `--resume` would then retry it and duplicate it. An item that failed while
+*reading* has no plan to render and correctly leaves no file.
 
 **The scale.** Redmine has exactly 4 projects. Three hold in-scope roots —
 Área de Telecom **5451** (tracker 14), HYDRO **170** (tracker 42), Operação
@@ -825,7 +918,10 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
 - `searchText[comment]` finds a document marker, but it is the same substring
   match as everywhere else: `rdmattachment:2931` would match
   `rdmattachment:29314`. `_has_exact_marker` compares whole **lines**, which is
-  why the marker is always written as the comment's first line on its own. The
+  why the marker is always written as the comment's first line on its own — and
+  the read needs `full_range=True` for the same reason, because a filter that
+  runs over a truncated page filters the wrong fifteen rows (fixed 2026-09-10;
+  see the attachments section). The
   note marker repeats this exactly: `rdmnote:` on its own first line of
   `Notepad.content`, never folded into the readable author/date line — that line
   is rebuilt from Redmine on every run, and a marker that moved with it would
@@ -932,8 +1028,8 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
 - **`document_max_size` is not the real ceiling; PHP's `post_max_size` is, and
   the API does not expose it.** Diagnosed 2026-08-11 on RDM 17582's 33.5 MB
   `.eml`, refused with `ERROR_UPLOAD_FILE_TOO_BIG_POST_MAX_SIZE` even though
-  `getGlpiConfig` reports `document_max_size = 50` (MB) and
-  `DOCUMENT_MAX_SIZE_BYTES` let it through. GLPI checks its own 50 MB first and
+  `getGlpiConfig` reported `document_max_size = 50` (MB) on that instance and
+  `DOCUMENT_MAX_SIZE_BYTES` let it through. GLPI checks its own ceiling first and
   only then hands the body to PHP, which applies the smaller limit — so the
   error surfaces at upload time and **never during the dry-run**. Nothing in
   `getGlpiConfig`, `/Config` or `/getGlpiConfig`'s other keys carries the PHP
@@ -986,6 +1082,17 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
   Redmine's disk. This is data, not configuration: `--apply` degraded exactly as
   designed, reporting all 77 as `FAILED_DOWNLOAD` while the project, its tasks
   and its 37 notes were written. Do not go hunting for a broken `REDMINE_URL`.
+- **The CLI used to blame the credentials for every failure of a run.**
+  `main()` wrapped the whole session block in one `except ApiError` printing
+  `PREFLIGHT_SESSION_FAILED`, which tells the operator to check `GLPI_URL`,
+  `GLPI_USER_TOKEN` and `GLPI_APP_TOKEN`. So a refused `POST /Project` — the
+  VARCHAR(255) case directly above, which leaves an orphan project — sent
+  whoever was diagnosing it to three environment variables that had just
+  carried a full preflight and a whole plan. Split 2026-09-10 on a
+  `session_open` flag: before the session, the credentials message; after it,
+  `CLI_RUN_FAILED`, which names the three causes actually measured here. The
+  batch runner and the panel had always routed this correctly, so the symptom
+  only appeared on `python main.py`.
 - **A permission error can mean the parent is gone.** `POST /ProjectTask` with a
   `projects_id` that no longer exists fails with the same "Você não tem
   permissão" text as a real rights problem, and so does a container row whose
@@ -1002,7 +1109,19 @@ starts failing exactly as `POST /Project` did — the fix would be the same merg
 
 ## Open points before production (spec 11)
 
-Five container-15 columns are listed in `MANDATORY_CONTAINER15_COLUMNS`; while
+Two things gate a full Telecom run, and neither is in this repository:
+
+1. **`post_max_size` in `php.ini`.** Measured ~16 MB against a 10 MB
+   `document_max_size`; ~4% of attachments in a 20-project sample were refused.
+   Telecom is 5451 roots. Files over the limit are reported as `FAILED_UPLOAD`
+   and left in Redmine, so this costs data silently unless the report is read.
+2. **789 production projects named "RDM &lt;n&gt;" carry no marker.** They are
+   invisible to dedup, so a batch will migrate those roots again and the
+   instance ends up with two projects per RDM number. That is a decision about
+   pre-existing data, not a defect here — but it has to be taken before the run,
+   not after. The Progresso tab reports the number in its own tile.
+
+Five project-container columns are listed in `MANDATORY_CONTAINER15_COLUMNS`; while
 GLPI has them flagged, missing ones **refuse the project**, and the dry-run
 report surfaces them. Tracker 14 covers all five. **Tracker 39 covers two** —
 it has no `Valor do Projeto`, `Gestão` or `Responsável Cliente` at all — which
@@ -1013,16 +1132,19 @@ section under Scope; this is the one open point that would close the tracker
 again if an admin re-flagged it.
 
 `MANDATORY_CONTAINER26_COLUMNS` is **empty since 2026-08-07**: a sweep of
-`GET /PluginFieldsField` found `mandatory: 0` on every field of container 26 —
+`GET /PluginFieldsField` found `mandatory: 0` on every field of the Faturamento
+container —
 including field 225 ("Status Faturamento"), whose unflagging was the standing
 GLPI-side request. Report section 5 no longer lists it. Field 225 stays in
 `never_write` for the reason that has not changed: the task's core **Estado**
 already carries the same status.
 
-The same sweep found container 15's five columns at `mandatory: 0` as well, yet
-`MANDATORY_CONTAINER15_COLUMNS` is deliberately left populated — a container-15
-flag *refuses the project*, the flags have flipped before, and the tuple only
-costs a report line.
+The same sweep found the project container's five columns at `mandatory: 0` as
+well, yet `MANDATORY_CONTAINER15_COLUMNS` is deliberately left populated — a
+flag there *refuses the project*, the flags have flipped before, and the tuple
+only costs a report line. Re-measured on production 2026-09-03: all 22 fields
+of container 17 read `is_active: 1, mandatory: 0`, and all 16 of container 18
+likewise.
 
 ### Faturamento stays on container 26 — CLOSED, confirmed with the manager 2026-08-07
 

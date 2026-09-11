@@ -101,11 +101,20 @@ def test_ignored_excludes_fields_that_were_empty_at_the_source():
 
 
 def test_totals_match_the_report_integrity_section():
+    """All FIVE numbers, not three.
+
+    Two of the five were unpinned until 2026-09-10, while the panel kept its
+    own copy of the bucket arithmetic. Both now read ProjectPlan.outcome_counts,
+    so they cannot disagree - this test is what holds that single source in
+    place if someone reintroduces a second one.
+    """
     plan = build_plan()
     summary = summarise(plan)
     report = Reporter(plan, apply_mode=False).render()
     assert f"Campos de origem analisados : {summary['fields']['total']}" in report
     assert f"gravados no GLPI          : {summary['fields']['written']}" in report
+    assert f"vazios no Redmine         : {summary['fields']['empty_source']}" in report
+    assert f"sem equivalente no GLPI   : {summary['fields']['no_counterpart']}" in report
     assert f"não resolvidos            : {summary['fields']['unresolved']}" in report
 
 

@@ -11,6 +11,19 @@ into the output, and it is the single place to review wording with the team.
 
 from __future__ import annotations
 
+# The container ids are READ, never transcribed. Every string below that names
+# a container interpolates one of these, because the numbers moved once already
+# and the text did not follow: the tool was built against a TEST instance that
+# numbered them 15 and 26, production numbers them 17 and 18, and on production
+# container 15 is somebody else's container ("adicionaltarefamp", on
+# ProjectTask) while 26 does not exist. A report that sends the operator to the
+# wrong container is worse than one that gives no number at all.
+# Fixed 2026-09-10; pinned by tests/test_container_labels.py.
+from config.settings import (  # noqa: E402
+    CONTAINER_ID_ADDITIONAL_FIELDS as _C_PROJECT,
+    CONTAINER_ID_FATURAMENTO as _C_FATURAMENTO,
+)
+
 # ---------------------------------------------------------------------------
 # Token redaction
 # ---------------------------------------------------------------------------
@@ -70,6 +83,21 @@ PREFLIGHT_SESSION_FAILED = (
     "  Verifique GLPI_URL, GLPI_USER_TOKEN e GLPI_APP_TOKEN."
 )
 
+# The message above used to cover EVERY ApiError of a run, because main() had a
+# single except around the whole session block. It told the operator to check
+# tokens that had demonstrably just worked - the session had carried a full
+# preflight and a whole plan by then. Split on 2026-09-10; the three causes
+# named below are the ones actually measured on this instance and recorded in
+# CLAUDE.md, the first of them being the VARCHAR(255) overflow that leaves an
+# orphan project behind.
+CLI_RUN_FAILED = (
+    "[FALHA] A migração parou por causa de uma recusa do GLPI.\n"
+    "  Detalhe: {detail}\n"
+    "  A sessão já estava aberta, então isto NÃO é problema de token. As\n"
+    "  causas medidas nesta instância são: valor longo demais para a coluna\n"
+    "  do plugin, campo obrigatório vazio, ou item pai que já não existe."
+)
+
 PREFLIGHT_FIELDS_RIGHTS_OK = "[OK] Permissões do plugin Fields confirmadas."
 
 # Wording required by spec section 9.0, item 2.
@@ -89,12 +117,13 @@ PREFLIGHT_PROJECTTASK_RIGHT_OK = (
     "[OK] Permissão de gravação nas tarefas de projeto confirmada."
 )
 
-# AVISO, não FALHA: sem esta permissão apenas a linha do container 26 é
+# AVISO, não FALHA: sem esta permissão apenas a linha do container de
+# Faturamento é
 # recusada. A tarefa de Faturamento é criada normalmente e a migração continua
 # — um projeto sem Faturamento não é afetado.
 PREFLIGHT_PROJECTTASK_RIGHT_MISSING = (
     "[AVISO] O perfil da API não tem permissão de ALTERAR em Tarefas de projeto.\n"
-    "  As linhas do container 26 (aba Faturamento) serão RECUSADAS pelo GLPI: as "
+    f"  As linhas do container {_C_FATURAMENTO} (aba Faturamento) serão RECUSADAS pelo GLPI: as "
     "tarefas de Faturamento\n"
     "  são criadas, mas a aba fica vazia e os valores só existem neste relatório.\n"
     "  Conceda a permissão em: Administração → Perfis → [perfil da API] → "
@@ -271,10 +300,10 @@ REPORT_ENTITY_FALLBACK_LINE = (
 REPORT_ORIGIN_LINE = "  Origem: RDM {issue_id} (tracker {tracker_id} {tracker_name})"
 REPORT_TASKS_LINE = "  Tarefas a criar: {count}"
 REPORT_FATURAMENTO_LINE = (
-    "  Faturamentos (tarefa tipo Faturamento + container 26): {count}"
+    f"  Faturamentos (tarefa tipo Faturamento + container {_C_FATURAMENTO}): {{count}}"
 )
 REPORT_CORE_HEADER = "  Campos do projeto (glpi_projects):"
-REPORT_CONTAINER15_HEADER = "  Campos adicionais (container 15):"
+REPORT_CONTAINER15_HEADER = f"  Campos adicionais (container {_C_PROJECT}):"
 REPORT_NOTHING = "  (nenhum)"
 
 REPORT_SECTION_2_INTRO = (
@@ -344,7 +373,7 @@ REPORT_TREE_PROJECT = "    #{issue_id} [{tracker}] {subject} → Projeto{glpi}"
 REPORT_TREE_TASK = "    #{issue_id} [{tracker}] {subject} → Tarefa{glpi}"
 REPORT_TREE_FATURAMENTO = (
     "    #{issue_id} [{tracker}] {subject} → Tarefa tipo Faturamento "
-    "+ container 26"
+    f"+ container {_C_FATURAMENTO}"
 )
 REPORT_TREE_SKIPPED = "    #{issue_id} [{tracker}] {subject} → IGNORADO ({reason})"
 
@@ -359,7 +388,7 @@ REPORT_SECTION_RELATIONS = "RELAÇÕES DO REDMINE NÃO MIGRADAS"
 REPORT_SECTION_RELATIONS_INTRO = (
     "  Relações horizontais (relates) não fazem parte da hierarquia e nunca "
     "viram tarefas comuns.\n  Somente parceiros do tracker 15 (Faturamento) "
-    "geram uma tarefa tipo Faturamento com linha no container 26."
+    f"geram uma tarefa tipo Faturamento com linha no container {_C_FATURAMENTO}."
 )
 REPORT_RELATION_LINE = (
     '  - #{issue_id} [{tracker}] "{subject}" — relação {relation_type}, '
@@ -515,11 +544,11 @@ REPORT_TRUNCATED_LOST = "      perdido: {value}"
 REPORT_TRUNCATED_NONE = "  (nenhum)"
 
 REPORT_SECTION_FATURAMENTO = (
-    "FATURAMENTO (tarefa tipo Faturamento + container 26)"
+    f"FATURAMENTO (tarefa tipo Faturamento + container {_C_FATURAMENTO})"
 )
 REPORT_FATURAMENTO_ITEM = '  Faturamento RDM {issue_id} — "{subject}"'
 REPORT_FATURAMENTO_TASK_PAYLOAD = "Tarefa (glpi_projecttasks):"
-REPORT_FATURAMENTO_ROW_PAYLOAD = "Linha do container 26:"
+REPORT_FATURAMENTO_ROW_PAYLOAD = f"Linha do container {_C_FATURAMENTO}:"
 
 REPORT_SECTION_TASKS = "TAREFAS (glpi_projecttasks)"
 REPORT_TASK_ITEM = '  Tarefa RDM {issue_id} — "{subject}"'
@@ -553,18 +582,20 @@ APPLY_CANCELLED = "Gravação cancelada. Nada foi gravado no GLPI."
 
 APPLY_HEADER = "== Gravando no GLPI =="
 APPLY_PROJECT_CREATED = "[OK] Projeto criado: GLPI {glpi_id} (RDM {issue_id})."
-APPLY_CONTAINER15_WRITTEN = "[OK] Campos adicionais gravados (container 15, linha {row_id})."
+APPLY_CONTAINER15_WRITTEN = (
+    f"[OK] Campos adicionais gravados (container {_C_PROJECT}, linha {{row_id}})."
+)
 APPLY_TASK_CREATED = "[OK] Tarefa criada: GLPI {glpi_id} (RDM {issue_id})."
 APPLY_FATURAMENTO_TASK_CREATED = (
     "[OK] Tarefa de Faturamento criada: GLPI {glpi_id} (RDM {issue_id})."
 )
 APPLY_FATURAMENTO_CREATED = (
-    "[OK] Linha de Faturamento criada: container 26 {row_id} na tarefa "
+    f"[OK] Linha de Faturamento criada: container {_C_FATURAMENTO} {{row_id}} na tarefa "
     "{task_id} (RDM {issue_id})."
 )
 APPLY_FATURAMENTO_DEGRADED = (
     "[AVISO] A tarefa de Faturamento RDM {issue_id} foi criada (GLPI "
-    "{task_id}), mas o GLPI recusou a linha do container 26. Os valores estão "
+    f"{{task_id}}), mas o GLPI recusou a linha do container {_C_FATURAMENTO}. Os valores estão "
     "no relatório e podem ser preenchidos à mão na aba Faturamento.\n"
     "  Detalhe: {detail}"
 )
@@ -659,7 +690,7 @@ RESET_LOCAL_ROW = "  RDM {issue_id:<7} {itemtype:<38} GLPI {glpi_id:<7} {migrate
 RESET_LOCAL_EMPTY = "  (nenhuma linha para esta árvore)"
 RESET_LOCAL_COUNT = "  Total: {count} linha(s) a apagar."
 
-RESET_MARKER_HEADER = "-- Marcador rdmfield no GLPI (container 15) --"
+RESET_MARKER_HEADER = f"-- Marcador rdmfield no GLPI (container {_C_PROJECT}) --"
 RESET_MARKER_NONE = (
     "  (nenhum marcador para esta issue — o GLPI já não bloqueia a migração)"
 )
@@ -773,6 +804,23 @@ CLI_HELP_PURGE_APPLY = "Executa a remoção. Exige confirmação."
 CLI_HELP_PURGE_YES = "Confirma sem perguntar (para pipelines)."
 CLI_HELP_PURGE_REPORT = "Caminho do arquivo de registro da limpeza."
 
+# The tool is retired (2026-09-10). Everything below it still exists because the
+# planning functions are the record of what was measured on the TEST instance;
+# nothing can reach the network through them any more. See PURGE_DISABLED.
+PURGE_DISABLED = (
+    "purge_import.py foi DESATIVADO e não remove mais nada.\n"
+    "  Motivo: ele foi calibrado na instância de TESTE, onde 1253 de 1274\n"
+    "  projetos vinham de um import que havia gravado o marcador rdmfield\n"
+    "  trocado. Esta instância não é aquela. Medido em 2026-09-10:\n"
+    "    - 1004 projetos seriam removidos, e NENHUM tem marcador rdmfield,\n"
+    "      ou seja, não há dedup envenenado para consertar aqui;\n"
+    "    - 236 deles nem sequer se chamam \"RDM <n>\" — são projetos normais\n"
+    "      do cliente, anteriores a esta ferramenta;\n"
+    "    - a lista de preservados aponta ids 1286-1298, que não existem nesta\n"
+    "      instância, então ela não protegia nada.\n"
+    "  A migração não precisa desta fase: use migrate_batch.py diretamente."
+)
+
 # Two headers, not one: the saved report is evidence of a destructive
 # operation, so it must say on its face whether it describes an intention
 # (dry-run) or an action that already happened (--apply). render_purge_report
@@ -804,12 +852,12 @@ PURGE_SUMMARY = (
     "Falhas: {failed}."
 )
 PURGE_VERIFY_OK = (
-    "Verificação: restam {projects} projetos e {containers} linhas de container 15, "
+    f"Verificação: restam {{projects}} projetos e {{containers}} linhas de container {_C_PROJECT}, "
     "todas pertencentes aos projetos preservados ({stray} órfãs)."
 )
 PURGE_VERIFY_FAILED = (
     "Verificação FALHOU: restam {projects} projetos e {containers} linhas de "
-    "container 15, das quais {stray} não pertencem a nenhum projeto vivo. "
+    f"container {_C_PROJECT}, das quais {{stray}} não pertencem a nenhum projeto vivo. "
     "Esperado {expected_projects} projetos e somente linhas preservadas."
 )
 PURGE_REPORT_SAVED = "Registro da limpeza salvo em {path}"
@@ -827,7 +875,7 @@ UI_CARD_UNRESOLVED = "Não resolvidos"
 UI_WARN_UNRESOLVED = "{count} referência(s) não resolvida(s)"
 # UI_WARN_MANDATORY was here until 2026-08-19: "{count} campo(s) obrigatório(s)
 # sem dados — bloqueia a gravação", shown as a critical badge. GLPI does not
-# block: every field of container 15 reads mandatory = 0. Deleted rather than
+# block: every field of the project container reads mandatory = 0. Deleted rather than
 # reworded because the count is already in the summary payload and section 5 of
 # the report names the columns properly. See the comment in web/static/app.js.
 # "warning": the container-26 row is written anyway, just incomplete.
@@ -1093,7 +1141,7 @@ BATCH_RUN_NOT_FOUND = (
 # purge_import.py - container-15 rows whose host project is already gone are
 # exactly the poison this phase removes, and were previously never selected.
 PURGE_ORPHAN_HEADER = (
-    "Linhas de container 15 órfãs (o projeto hospedeiro já não existe): {count}"
+    f"Linhas de container {_C_PROJECT} órfãs (o projeto hospedeiro já não existe): {{count}}"
 )
 PURGE_ORPHAN_LINE = (
     "  linhas {rows} | ex-projeto {project_id} | marcador {marker}"

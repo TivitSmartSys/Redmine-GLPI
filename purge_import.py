@@ -416,6 +416,23 @@ def main(argv: list[str] | None = None) -> int:
         except (AttributeError, ValueError):  # pragma: no cover
             pass
 
+    # RETIRED 2026-09-10, and the refusal is placed before EVERYTHING else -
+    # before the arguments are read, before load_settings, before any session.
+    # An instruction in the documentation is not a control: this used to be
+    # documented as step one of the batch workflow, and `--apply --yes` would
+    # have force-purged 1004 production projects unattended. See PURGE_DISABLED
+    # for the measurement and tests/test_purge_disabled.py for the reasoning.
+    print(messages.PURGE_DISABLED, file=sys.stderr)
+    return EXIT_CONFIG
+
+
+def _retired_main(argv: list[str] | None = None) -> int:
+    """The original body, kept unreachable as the record of what it did.
+
+    Not deleted, because the selection rule and the deletion ORDER (container
+    row first, project last) are expensive evidence and the design doc refers
+    to them. Nothing calls this.
+    """
     args = build_parser().parse_args(argv)
     try:
         settings = load_settings()

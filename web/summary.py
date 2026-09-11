@@ -20,19 +20,16 @@ from transform.notes import summarise as summarise_notes
 
 
 def _outcome_counts(plan: ProjectPlan) -> dict[str, int]:
-    """Same four buckets the integrity section counts (report section 7)."""
-    counts = {
-        Outcome.WRITTEN: 0,
-        Outcome.EMPTY_SOURCE: 0,
-        Outcome.NO_COUNTERPART: 0,
-        Outcome.UNRESOLVED: 0,
-    }
-    records = plan.all_records()
-    for record in records:
-        if record.outcome in counts:
-            counts[record.outcome] += 1
+    """The section-7 buckets, renamed for JSON. The counting is NOT done here.
+
+    It used to be: this function held its own copy of the loop the reporter
+    runs, so the cards and the text under them could have drifted apart while
+    only the report checked its own sum. Since 2026-09-10 both read
+    ProjectPlan.outcome_counts and all this does is relabel the keys.
+    """
+    total, counts = plan.outcome_counts()
     return {
-        "total": len(records),
+        "total": total,
         "written": counts[Outcome.WRITTEN],
         "empty_source": counts[Outcome.EMPTY_SOURCE],
         "no_counterpart": counts[Outcome.NO_COUNTERPART],
