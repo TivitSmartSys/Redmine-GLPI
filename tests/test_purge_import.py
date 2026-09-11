@@ -428,7 +428,11 @@ def test_keep_violation_detail_is_redacted(monkeypatch, capsys):
     monkeypatch.setattr(purge_import, "GlpiClient", lambda *a, **k: FakeGlpiCtx())
     monkeypatch.setattr(purge_import, "build_purge_plan", boom_plan)
 
-    code = purge_import.main([])
+    # Against _retired_main, not main: the tool was retired on 2026-09-10 and
+    # main() now refuses before reading a single argument (see
+    # tests/test_purge_disabled.py). The redaction this test guards still lives
+    # in the retired body, so the coverage moves rather than disappearing.
+    code = purge_import._retired_main([])
 
     assert code == purge_import.EXIT_FAILED
     err = capsys.readouterr().err

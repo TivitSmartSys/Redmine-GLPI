@@ -313,3 +313,79 @@ def test_a_broken_progress_callback_never_costs_a_migration(
 
     assert ledger.counts(run)[STATE_OK] == 2
     assert ledger.counts(run).get(STATE_FAILED, 0) == 0
+
+
+# -- a failed item must still leave its report ------------------------------
+#
+# Found by the audit of 2026-09-10. The per-item report was written only after
+# `ledger.mark(STATE_OK)`, so the one item an operator actually needs to look at
+# - the one that failed - was the only one with no report on disk. All that
+# survived was the ledger's 500-character reason and whatever console.txt held.
+#
+# The report is worth most exactly there: when apply fails halfway, it names the
+# project, the tasks, the fields and the files that WERE planned, which is what
+# tells you whether the failure happened before or after the first write.
+#
+# The write stays out of the pipeline's `try` in both branches, for the reason
+# already recorded below: an OSError here must never be caught by the broad
+# `except` and turn a committed migration into a `failed` ledger row.
+
+
+def test_a_failed_item_still_writes_its_report(monkeypatch, ledger, tmp_path):
+    """The plan was built; only apply failed. That report is the diagnosis."""
+    def fake_apply(glpi, plan, store, redmine=None):
+        raise Boom("ERROR_GLPI_ADD Data too long for column 'x' (1406)")
+
+    patch_pipeline(monkeypatch)
+    monkeypatch.setattr(runner, "apply_plan", fake_apply)
+    run = ledger.start_run("t")
+    ledger.queue(run, [7])
+
+    runner.run_batch(
+        None, None, {}, ledger, run, [7],
+        apply_mode=True, report_dir=tmp_path,
+    )
+
+    assert ledger.counts(run)[STATE_FAILED] == 1
+    assert (tmp_path / "RDM7.txt").read_text(encoding="utf-8") == "relatório"
+
+
+def test_an_item_that_failed_while_planning_writes_no_report(monkeypatch, ledger, tmp_path):
+    """There is no plan to render, and inventing an empty one would put a
+    report on disk that describes nothing."""
+    patch_pipeline(monkeypatch, fails={7})
+    run = ledger.start_run("t")
+    ledger.queue(run, [7])
+
+    runner.run_batch(
+        None, None, {}, ledger, run, [7],
+        apply_mode=True, report_dir=tmp_path,
+    )
+
+    assert ledger.counts(run)[STATE_FAILED] == 1
+    assert not (tmp_path / "RDM7.txt").exists()
+
+
+def test_a_report_that_cannot_be_written_after_a_failure_is_not_fatal(
+    monkeypatch, ledger, tmp_path
+):
+    """Same rule as the success branch: a disk problem must not change the
+    ledger, and must not end the run."""
+    def fake_apply(glpi, plan, store, redmine=None):
+        raise Boom("recusado")
+
+    patch_pipeline(monkeypatch)
+    monkeypatch.setattr(runner, "apply_plan", fake_apply)
+    monkeypatch.setattr(
+        runner, "render_item_report",
+        lambda plan, apply_mode: (_ for _ in ()).throw(OSError("disco cheio")),
+    )
+    run = ledger.start_run("t")
+    ledger.queue(run, [7, 8])
+
+    runner.run_batch(
+        None, None, {}, ledger, run, [7, 8],
+        apply_mode=True, report_dir=tmp_path,
+    )
+
+    assert ledger.counts(run)[STATE_FAILED] == 2

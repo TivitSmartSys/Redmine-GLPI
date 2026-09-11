@@ -64,6 +64,39 @@ def render_item_report(plan, apply_mode: bool) -> str:
     return Reporter(plan, apply_mode=apply_mode).render()
 
 
+def _write_item_report(report_dir: Path, issue_id: int, plan, apply_mode: bool) -> None:
+    """Save one item's report. Never raises, never changes the item's state.
+
+    Called from BOTH the success and the failure branch. Until 2026-09-10 it
+    happened only on success, which left the one item an operator actually
+    needs to read - the failed one - as the only item with no report on disk.
+    A failure after the plan was built is exactly where the report earns its
+    keep: it names the project, the tasks, the fields and the files that were
+    planned, so it tells you whether anything reached GLPI before the refusal.
+
+    `plan is None` means the failure happened while READING, so there is
+    nothing to render and no file is written; an empty report would describe
+    nothing while looking like evidence.
+
+    The OSError is swallowed here rather than in the caller's `try`, and that
+    placement is load-bearing: caught by the loop's broad `except` a disk-full
+    would mark an item `failed` whose migration had in fact been committed to
+    GLPI, and --resume would then retry it and duplicate it.
+    """
+    if plan is None:
+        return
+    path = report_dir / f"RDM{issue_id}.txt"
+    try:
+        path.write_text(render_item_report(plan, apply_mode), encoding="utf-8")
+    except OSError as exc:
+        print(
+            messages.BATCH_REPORT_WRITE_FAILED.format(
+                issue_id=issue_id, path=path, detail=messages.redact(exc)
+            ),
+            file=sys.stderr,
+        )
+
+
 def run_batch(
     glpi,
     redmine,
@@ -106,6 +139,9 @@ def run_batch(
             print(messages.BATCH_ITEM_START.format(
                 position=position, total=total, issue_id=issue_id
             ))
+            # Declared here so the failure branch can tell "we never built a
+            # plan" from "the plan exists and applying it failed".
+            plan = None
             try:
                 existing = check_already_migrated(glpi, issue_id)
                 if existing:
@@ -132,6 +168,9 @@ def run_batch(
                 )
                 ledger.mark(run_id, issue_id, STATE_FAILED, str(detail)[:500])
                 _notify(on_item, position, total, issue_id, STATE_FAILED, str(detail)[:500])
+                # After the ledger, like the success branch: the report is a
+                # record, never a precondition for the state.
+                _write_item_report(report_dir, issue_id, plan, apply_mode)
                 consecutive_failures += 1
                 if consecutive_failures >= MAX_CONSECUTIVE_FAILURES:
                     # Stop the loop. Everything still queued keeps its `pending`
@@ -150,21 +189,8 @@ def run_batch(
             ledger.mark(run_id, issue_id, STATE_OK)
             _notify(on_item, position, total, issue_id, STATE_OK, "")
 
-            # The report file is written OUTSIDE the pipeline's try on purpose.
-            # A disk-full mid-run would otherwise be caught by the broad except
-            # above and mark every remaining item `failed`, indistinguishable in
-            # the ledger from a real migration failure - while the migration for
-            # this item had in fact succeeded and been committed to GLPI.
-            path = report_dir / f"RDM{issue_id}.txt"
-            try:
-                path.write_text(render_item_report(plan, apply_mode), encoding="utf-8")
-            except OSError as exc:
-                print(
-                    messages.BATCH_REPORT_WRITE_FAILED.format(
-                        issue_id=issue_id, path=path, detail=messages.redact(exc)
-                    ),
-                    file=sys.stderr,
-                )
+            # OUTSIDE the pipeline's try on purpose - see _write_item_report.
+            _write_item_report(report_dir, issue_id, plan, apply_mode)
     finally:
         if store is not None:
             store.close()

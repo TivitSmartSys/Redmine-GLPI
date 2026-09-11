@@ -1,7 +1,8 @@
 # Deployment handoff — Redmine → GLPI migration tool
 
 Everything an operator (or a deployment agent) needs to run this application on a VM.
-Written against the repository state of 2026-08-05.
+Written against the repository state of 2026-08-05, revised 2026-09-10 for the
+production instance and the batch/panel work that landed after it.
 
 The functional specification is `INSTRUKCJA_Redmine_do_GLPI_2.md`; architecture and
 invariants are in `CLAUDE.md`. **This document does not restate them** — it covers
@@ -11,13 +12,20 @@ only runtime, packaging, networking, state and security.
 
 ## 1. What is being deployed
 
-A Python application with **two entrypoints over one shared code path**:
+A Python application with **several entrypoints over one shared code path**:
 
 | Entrypoint | Command | Nature |
 |---|---|---|
 | CLI | `python main.py --issue <id> [--apply]` | one-shot, exits |
+| Batch CLI | `python migrate_batch.py --project <p> [--apply]` | long one-shot, resumable |
 | Web panel | `python serve.py` (Flask) | long-running HTTP service |
 | Audit CLI | `python audit_coverage.py [--tracker N]` | one-shot, read-only |
+| Status CLI | `python migration_status.py [--html <f>]` | one-shot, read-only |
+| Reset CLI | `python reset_migration.py --issue <id>` | one-shot, deletes only markers |
+
+`purge_import.py` is **retired**: it refuses to run and exits 2. It was built
+for the test instance and would select over a thousand legitimate projects here.
+Do not deploy a wrapper that tries to work around it.
 
 `web/jobs.py` is a transcription of `main.main()` — the panel calls the same
 functions in the same order. Deploying the panel therefore also deploys the CLI;
@@ -157,7 +165,7 @@ the CLI at all.
   is the `rdmfield` marker searched in GLPI itself (`check_already_migrated`); the DB
   is a cache. Losing it costs the History tab and resumability, not correctness.
 - The flip side: **deleting the DB does not let you migrate an issue again either.**
-  What refuses a re-run is the `rdmfield` marker on the container-15 row, and that
+  What refuses a re-run is the `rdmfield` marker on the project container's row, and that
   row survives the deletion of its project. To re-test an issue whose GLPI project
   was removed, use `python reset_migration.py --issue <id> --apply` — it purges the
   orphaned marker and the matching `migration_map` rows, and refuses if the project
@@ -417,8 +425,14 @@ Run in this order. Steps 1–4 write nothing.
    not throwaway.
 
 Wider verification set (dry-run only), from spec §1a: `20238` minimal ·
-`20156`/`18620`/`18826` out-of-scope child rule · `20172` the only issue exercising
-the Faturamento/container-25 path.
+`20156`/`18620`/`18826` out-of-scope child rule · `20438`/`20441` exercise the
+Faturamento path (a tracker-15 partner reached by relation, written to the
+ProjectTask's Faturamento container).
+
+**Container numbering is per-instance.** Production numbers the project
+container **17** and the Faturamento container **18**; the test instance used 15
+and 26, and on production container 15 belongs to an unrelated ProjectTask
+container. Trust `config/settings.py`, never a number transcribed into prose.
 
 ---
 
@@ -448,8 +462,16 @@ the Faturamento/container-25 path.
   History tab is expected to survive redeploys.
 - **Report retention** — where `report_*.txt` are archived, given they contain
   migrated business data (no credentials; they pass through `redact()`).
-- Five container-15 columns are flagged mandatory and the `plan_end_date` /
+- Five project-container columns are listed as mandatory and the `plan_end_date` /
   `real_end_date` sources are still undecided (spec §11, summarised in `CLAUDE.md`).
+- **`post_max_size` in the GLPI server's `php.ini`** — measured at roughly 16 MB,
+  below what GLPI itself accepts. Attachments above it are reported as
+  `FAILED_UPLOAD` and stay in Redmine. Raise it *before* a full run, not after.
+  Raise `upload_max_filesize` with it; `post_max_size` must remain the larger.
+- **789 production projects named "RDM &lt;n&gt;" carry no `rdmfield` marker**, so
+  dedup cannot see them and a batch will migrate those roots again. Decide what
+  happens to them before the run.
+
   These are *functional* open points, not deployment blockers, but they mean the tool
   is not yet signed off for unattended production use.
 
@@ -457,10 +479,14 @@ the Faturamento/container-25 path.
 
 ## 12. Pre-flight for the deploying agent
 
-- [ ] `main.py` has **uncommitted local changes** (`git status: M main.py`, +29/−2) —
-      commit or explicitly discard them before packaging. Do not deploy from a dirty
-      tree.
-- [ ] `wsgi.py` created (§7.1) — it is not in the repo.
+- [ ] Working tree clean (`git status`). Do not deploy from a dirty tree.
+- [ ] `python -m pytest tests -q` green (322 tests) on the machine you package from.
+- [ ] `wsgi.py` present — it **is** in the repo now, and reads `MIGRATION_DB_PATH`
+      and `MIGRATION_REPORTS_DIR` from the environment.
+- [ ] `MIGRATION_REPORTS_DIR` points somewhere **writable**. Both long-running
+      workers probe it with a real file before doing any work and abort naming the
+      variable if the probe fails; a read-only application directory is the
+      failure this guards.
 - [ ] `gunicorn` (or `waitress`) added to the deploy environment — not in
       `requirements.txt`.
 - [ ] `.env` transferred out-of-band, mode `600`, correct owner.

@@ -357,7 +357,16 @@ def build_project_plan(
             )
 
     # Second Faturamento path: relations of the root issue (spec 6.5, step 1).
-    discovery = discover_from_relations(redmine, root_issue)
+    #
+    # The ids already classified above are excluded, because the two paths are
+    # independent and can reach the same issue - a tracker-15 descendant of the
+    # root that is also related to it. Without this it was appended twice and
+    # apply wrote a second container row on the one ProjectTask (2026-09-10).
+    discovery = discover_from_relations(
+        redmine,
+        root_issue,
+        already_planned=[item.issue_id for item in faturamento],
+    )
     for related_issue in discovery.issues:
         fat_core, fat_container = mapper.map_faturamento(related_issue)
         faturamento.append(
@@ -453,8 +462,16 @@ def apply_plan(
     plan: ProjectPlan,
     store: MigrationStore,
     redmine: RedmineClient | None = None,
-) -> bool:
-    """Write the plan to GLPI. Returns False when a hard step failed.
+) -> None:
+    """Write the plan to GLPI. Raises ApiError when a hard step fails.
+
+    The docstring used to promise a False return for a hard failure. There was
+    none: the only `return` handed back True, and all three callers ignored it
+    (2026-09-10). A hard failure has always left this function by raising, which
+    is what `batch/runner.py` catches per item and what `main()` routes to
+    CLI_RUN_FAILED. The soft failures - a refused container-26 row, a file that
+    would not upload, a note GLPI rejected - deliberately do NOT raise; they set
+    an outcome on their own record and the report counts them.
 
     Order is fixed by spec 9.2: project, then the container-15 row (always
     carrying rdmfield, even if every other field is empty), then the tasks
@@ -604,7 +621,6 @@ def apply_plan(
         apply_attachments(glpi, redmine, plan, store)
 
     print(messages.APPLY_DONE)
-    return True
 
 
 def apply_attachments(
@@ -1073,10 +1089,15 @@ def main(argv: list[str] | None = None) -> int:
     print(messages.CLI_MODE_APPLY if args.apply else messages.CLI_MODE_DRY_RUN)
     print()
 
+    # False until initSession has actually answered. The ApiError handler at
+    # the bottom reads it to choose between "your tokens are wrong" and "GLPI
+    # refused something mid-run"; those are different repairs.
+    session_open = False
     try:
         with GlpiClient(
             settings.glpi_url, settings.glpi_user_token, settings.glpi_app_token
         ) as glpi, RedmineClient(settings.redmine_url, settings.redmine_api_key) as redmine:
+            session_open = True
             if not run_preflight(glpi, redmine, mapping, args.issue):
                 print(messages.PREFLIGHT_ABORTED, file=sys.stderr)
                 return EXIT_FAILED
@@ -1122,8 +1143,16 @@ def main(argv: list[str] | None = None) -> int:
 
             return EXIT_OK
     except ApiError as exc:
-        print(messages.PREFLIGHT_SESSION_FAILED.format(detail=messages.redact(exc)),
-              file=sys.stderr)
+        # WHICH message depends on whether the session ever opened, and the
+        # difference is not cosmetic. One except covered both until 2026-09-10,
+        # so a refused POST /Project - the VARCHAR(255) case that leaves an
+        # orphan project - told the operator to check tokens that had just
+        # carried a full preflight. See tests/test_cli_error_routing.py.
+        template = (
+            messages.CLI_RUN_FAILED if session_open
+            else messages.PREFLIGHT_SESSION_FAILED
+        )
+        print(template.format(detail=messages.redact(exc)), file=sys.stderr)
         return EXIT_FAILED
     except KeyboardInterrupt:
         print(messages.CLI_INTERRUPTED, file=sys.stderr)

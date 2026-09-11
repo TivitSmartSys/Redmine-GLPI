@@ -17,6 +17,7 @@ own mode and its own decision about which project to attach rows to.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 from clients.errors import RedmineError
@@ -42,11 +43,33 @@ class FaturamentoDiscovery:
     failures: list[tuple[int, str]] = field(default_factory=list)
 
 
-def discover_from_relations(redmine, root_issue: dict) -> FaturamentoDiscovery:
-    """Walk the root issue's relations and keep only tracker-15 partners."""
+def discover_from_relations(
+    redmine, root_issue: dict, already_planned: Iterable[int] = ()
+) -> FaturamentoDiscovery:
+    """Walk the root issue's relations and keep only tracker-15 partners.
+
+    `already_planned` holds the issue ids the TREE walk has already classified
+    as Faturamento. The two paths of spec 6.5 are independent and can reach the
+    same issue - a tracker-15 descendant of the root that is ALSO related to it
+    - and until 2026-09-10 nothing compared them, so such an issue was planned
+    twice. At apply time the second copy reuses the first copy's ProjectTask
+    through the local map and then writes a SECOND container row on it;
+    `create_faturamento_row` has no update branch and container 18 has no dedup
+    marker, so nothing downstream could catch it.
+
+    Seeding `seen` is the whole implementation: the partner is then never
+    fetched (one GET saved per root) and cannot reach `ignored_relations`
+    either, which is correct - it is migrated, by the other path, and listing
+    it as ignored would tell the operator the opposite of what happened.
+
+    The sibling guard has been in `main.build_project_plan` since attachments
+    landed: `plan_attachments` is passed only the relation-sourced issues,
+    because a tracker-15 descendant "is already a node of tree_plan and would
+    be counted twice". The files were guarded; the invoice itself was not.
+    """
     discovery = FaturamentoDiscovery()
     root_id = int(root_issue["id"])
-    seen: set[int] = set()
+    seen: set[int] = {int(issue_id) for issue_id in already_planned}
 
     for relation in root_issue.get("relations") or []:
         partner_id = relation_partner_id(relation, root_id)

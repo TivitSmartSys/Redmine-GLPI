@@ -94,9 +94,11 @@ def test_a_retry_with_a_populated_store_does_not_post_a_second_project():
     # The retry: a fresh plan built the same way --resume rebuilds one, same
     # store, carrying the Project row recorded on attempt 1.
     retry_plan = minimal_plan()
-    ok = main.apply_plan(glpi, retry_plan, store, redmine=None)
+    # No return value to assert on since 2026-09-10: apply_plan used to hand
+    # back a bool its docstring described as a failure signal, but the only
+    # return was True and no caller read it. A hard failure raises.
+    main.apply_plan(glpi, retry_plan, store, redmine=None)
 
-    assert ok is True
     assert glpi.project_posts == 1, "step 1 must be guarded exactly like steps 3 and 4"
     assert retry_plan.glpi_project_id == 1265
     assert retry_plan.glpi_ids[retry_plan.issue_id] == 1265
